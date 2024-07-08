@@ -75,26 +75,32 @@ qiime tools import \
 
 
 
-### STEP 6: DENOISE PROCESSED READS ###
-qiime deblur denoise-16S \
-  --i-demultiplexed-seqs filtered-joined-seqs2.qza \
-  --p-trim-length 400 \
-  --o-representative-sequences rep-seqs-deblur.qza \
-  --o-table table-deblur.qza \
-  --p-sample-stats \
-  --o-stats stats-deblur.qza \
+### STEP 6: DENOISE AND CLUSTERING INTO ASV ###
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs trimmed-seqs.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 260 \
+  --p-trunc-len-r 260 \
+  --p-n-threads 4
+  --o-representative-sequences rep-seqs-dada2.qza \
+  --o-table table-dada2.qza \
+  --o-denoising-stats denoising-stats-dada2.qza
 
 ###  VISUALIZATION AND SUMMARY	
-    #NOTE: THIS IS OPTIONAL
- 
 qiime feature-table summarize \
-  --i-table table-deblur.qza \
-  --o-visualization table-deblur.qzv \
-  --m-sample-metadata-file sample-metadata.tsv
-qiime feature-table tabulate-seqs \
-  --i-data rep-seqs-deblur.qza \
-  --o-visualization rep-seqs-deblur.qzv
+--i-table table-dada2.qza \
+--o-visualization table-dada2.qzv 
 
+qiime feature-table tabulate-seqs \
+--i-data rep-seqs-dada2.qza \
+--o-visualization rep-seqs-dada2.qzv
+
+### CREATE FEATURE TABLE WITH METADATA 
+qiime feature-table summarize \
+  --i-table table-dada2.qza \
+  --o-visualization table-dada2-summary.qzv \
+  --m-sample-metadata-file METADATA_microbiota.tsv
 
 ### STEP 7: CREATE PHYLOGENY ###
 #ALIGNMENT OF REPRESENTATIVE SEQUENCES
@@ -126,57 +132,67 @@ wget \
 
 qiime feature-classifier classify-sklearn \
   --i-classifier silva-138-99-nb-classifier.qza \
-  --i-reads rep-seqs-deblur.qza \
+  --i-reads rep-seqs-dada2.qza \
   --o-classification taxonomy.qza \
-  --p-confidence 0 \
+  --p-n-jobs 1
+  --p-confidence 0.7 \
   --p-read-orientation same \
 
 
 
 ### STEP 9: FILTER ARCHAEA, CHLOROPLAST, SINGLETONS ###
 qiime taxa filter-table \
-  --i-table table-deblur.qza \
+  --i-table table-dada2.qza \
   --i-taxonomy taxonomy.qza \
   --p-exclude Archaea \
   --p-mode contains \
-  --o-filtered-table table-deblur-noAr.qza \
+  --o-filtered-table table-ddada2-noAr.qza 
 
 qiime taxa filter-table \
-  --i-table table-deblur-noAr.qza
-  --i-taxonomy taxonomy.qza
-  --p-exclude Chloroplast \
+  --i-table table-clean.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude Eukaryota \
   --p-mode contains \
-  --o-filtered-table table-deblur-noArnoCh.qza \
+  --o-filtered-table table-dada2-clean.qza 
+
 
 qiime feature-table filter-features \
-  --i-table table-deblur-noArnoCh.qza
+  --i-table table-dada2-clean.qza \
   --p-min-frequency 2 \
-  --o-filtered-table table-deblur-clean.qza \
-
-
-
-### STEP 10: FILTER FEATURES FROM DNA SAMPLES ###
-#IDENTIFY FEATURES IN DNA KIT BLANKS
-qiime tools export \
-  --input-path 
-  --output-path 
-
-biom convert \
-  -i 
-  -o 
-  --to-tsv
-
-#FILTER FEATURES FOUND IN DNA KIT BLANKS
-qiime feature-table filter-features \
-  --i-table 
-  --m-metadata-file 
-  --o-filtered-table 
-
+  --o-filtered-table table-clean.qza 
 
 
 ### STEP 11: RAREIFY TABLE ###
-qiime feature-table rarefy \
-  --i-table 
-  --p-sampling-depth 
-  --p-with-replacement \
-  --o-rarefied-table 
+ qiime diversity alpha-rarefaction \
+  --i-table table-dada2.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 7000 \
+  --m-metadata-file metadata_microbiota.tsv \
+  --o-visualization alpha-rarefaction.qzv
+
+### STEP 12: CREATE TAXA BARPLOT ### 
+qiime taxa barplot \
+  --i-table table-clean.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file METADATA_microbiota.tsv \
+  --o-visualization taxa-bar-plots.qzv
+  
+### STEP 13: DIVERSITY ANALYSIS ###
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table ARB-table.qza \
+  --p-sampling-depth 1103 \
+  --m-metadata-file metadata_microbiota.tsv \
+  --output-dir core-metrics-results
+ #### ALPHA DIVERSITY ####
+    qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/faith_pd_vector.qza \
+  --m-metadata-file metadata_microbiota.tsv \
+  --o-visualization core-metrics-results/faith-pd-group-significanceboth.qzv
+
+  #### BETA DIVERSITY ####
+    qiime emperor plot \
+  --i-pcoa core-metrics-results/bray_curtis_pcoa_results.qza \
+  --m-metadata-file METADATA_microbiota.tsv \
+  --o-visualization core-metrics-results/bray_curtis_pcoa_results.qzv
+
