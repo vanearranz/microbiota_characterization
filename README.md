@@ -65,8 +65,8 @@ qiime quality-filter q-score-joined \
 
 
 ### STEP 5: REIMPORT FILTERED FILES WITH MODIFIED NAMES ###
-	#NOTE: THIS IS OPTIONAL
 ```
+#NOTE: THIS IS OPTIONAL
 qiime tools export \
   --input-path filtered-joined-seqs.qza
   --output-path Microbiota_adults/
@@ -103,11 +103,12 @@ qiime feature-table tabulate-seqs \
 --o-visualization rep-seqs-dada2.qzv
 ```
 #### CREATE FEATURE TABLE WITH METADATA 
+```
 qiime feature-table summarize \
   --i-table table-dada2.qza \
   --o-visualization table-dada2-summary.qzv \
   --m-sample-metadata-file METADATA_microbiota.tsv
-
+```
 ### STEP 7: CREATE PHYLOGENY ###
 ```
 #ALIGNMENT OF REPRESENTATIVE SEQUENCES
