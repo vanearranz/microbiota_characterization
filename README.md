@@ -4,7 +4,6 @@ Bioinformatic pipeline to analyze microbiota from Arbacia lixula and Paracentrot
 
 ## connect to VENUS
 ssh intern@161.116.67.159
-password Marthasterias
 
 ### BUILD ENVIRONMENT AND INSTALL ###
 module load anaconda3/2020.11
