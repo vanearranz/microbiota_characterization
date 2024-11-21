@@ -212,3 +212,9 @@ qiime emperor plot \
   --m-metadata-file METADATA_microbiota.tsv \
   --o-visualization core-metrics-results/bray_curtis_pcoa_results.qzv
 ```
+
+### STEP 14: EXPORT FROM QIIME2 TO R ###
+Based on this [tutorial](https://github.com/pjtorres/Bioinformatics-BC/blob/master/Phyloseq/QIIME2_Phyloseq/Exporting%20QIIME2%20data%20for%20Phyloseq%20Analysis.ipynb)
+```
+
+```
