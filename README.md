@@ -215,6 +215,43 @@ qiime emperor plot \
 
 ### STEP 14: EXPORT FROM QIIME2 TO R ###
 Based on this [tutorial](https://github.com/pjtorres/Bioinformatics-BC/blob/master/Phyloseq/QIIME2_Phyloseq/Exporting%20QIIME2%20data%20for%20Phyloseq%20Analysis.ipynb)
+
+```
+# Export tree
+qiime tools export --input-path unrooted-tree.qza\          --output-path Phyloseq
+# Export taxonomy
+qiime tools export --input-path taxonomy.qza\ 
+--output-path Phyloseq
+# Export table
+qiime tools export --input-path table-clean.qza \
+    --output-path Phyloseq
+```
+The first line in our taxonomy file must be changes to #OTUID
+
+```
+sed 's/Feature ID/#OTUID/' Phyloseq/taxonomy.tsv | sed 's/Taxon/taxonomy/' | sed 's/Confidence/confidence/' > Phyloseq/biom-taxonomy.tsv
 ```
 
+Add the Taxonomy data to the Biom file 
+
+```
+biom add-metadata \
+    -i Phyloseq/feature-table.biom \
+    -o Phyloseq/table-with-taxonomyv2.biom \
+    --observation-metadata-fp Phyloseq/biom-taxonomy.tsv \
+    --sc-separated taxonomy 
+```
+Add the taxonomy data to your biom file
+```
+biom add-metadata \
+    -i Phyloseq/feature-table.biom \
+    -o Phyloseq/table-with-taxonomyv2.biom \
+    --observation-metadata-fp Phyloseq/biom-taxonomy.tsv \
+    --sc-separated taxonomy 
+```
+
+Now that we have the necessary files we will hop onto Phyloseq in R 
+```
+# Move the PhyloSeq folder to my local computer
+scp -r intern@161.116.67.159:~/data/data/Microbiota_adults/Phyloseq /Users/vanessaarranz/Desktop/Microbiota adultos Lea/
 ```
