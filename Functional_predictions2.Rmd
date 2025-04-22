@@ -1,0 +1,570 @@
+---
+title: "Functional_predictions"
+author: "Vanessa Arranz"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load packages and useful functions
+```{r setup, include=FALSE}
+suppressMessages({
+        library("tidyverse")
+        library("phyloseq")
+        library("rstatix")
+        library("vegan")
+        library("picante")
+        library("kableExtra")
+        library("reticulate")
+        library("ALDEx2")
+        library("data.table")
+        library("dplyr")
+})
+```
+
+
+# Import FAPROTAX
+
+```{r}
+# Import FAPROTAX
+faprotax_table <- read.delim("FAPROTAX_1.2.10/functional_otu_table.tsv", row.names = 1)
+```
+
+# Subset Species
+```{r}
+ps_SP
+
+# Extract metadata from the phyloseq object
+metadata_species_subset <- data.frame(as(sample_data(ps_SP), "data.frame"))
+rownames(metadata_species_subset) <- metadata_species_subset$sample.id
+
+# Subset FAPROTAX table based on sample IDs
+subset_species <- metadata_species_subset$sample.id
+faprotax_Species <- as.data.frame(faprotax_table[, subset_species])
+# Check the subsetted pathway abundance table
+head(faprotax_Species)
+
+## Columns doesn't sum up to 1 so we need to normalize
+colSums(faprotax_Species)
+# Normalize each column to sum to 1
+faprotax_Species_normalized <- sweep(faprotax_Species, 2, colSums(faprotax_Species), "/")
+colSums(faprotax_Species_normalized)
+
+t_Species_normalized <- as.data.frame(t(faprotax_Species_normalized))
+t_Species_normalized_metadata<- rbind(
+  metadata_species_subset,
+  t_Species_normalized
+)
+t_Species_normalized$sample.id <- rownames(t_Species_normalized)
+write.csv(t_Species_normalized, "FAPROTAX_Species_normalized.csv", row.names = FALSE)
+
+# Remove rows that are all 0
+faprotax_species_rel <- faprotax_Species_normalized %>%
+  filter(rowSums(faprotax_Species_normalized) > 0) %>%  # Remove rows that are 0
+  rownames_to_column(var = "faprotax.function")  # Move function names to a column
+
+# Reshape to long format for plotting
+faprotax_species_rel_long <- faprotax_species_rel %>%
+  pivot_longer(-faprotax.function, names_to = "sample.id", values_to = "count")
+
+# Add METADATA to the long-format data
+plot_data <- faprotax_species_rel_long %>%
+  left_join(metadata_species_subset, by = "sample.id")
+
+write.csv(metadata_species_subset, "metadata_species_subset.csv", row.names = FALSE)
+
+
+
+# Aggregate data to calculate mean abundances and standard deviation per species
+# Convert species to factor
+plot_data <- plot_data %>%
+  mutate(species = as.factor(species)) %>%
+  mutate(faprotax.function = as.factor(faprotax.function))
+
+# Function to calculate standard error
+se <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(length(na.omit(x)))
+}
+# Calculate mean
+species_means <- aggregate(
+  count ~ species + faprotax.function,
+  data = plot_data,
+  FUN = mean
+)
+# Calculate standard error
+species_se <- aggregate(
+  count ~ species + faprotax.function,
+  data = plot_data,
+  FUN = se
+)
+# Merge mean and standard error into a single data frame
+species_means$se_count <- species_se$count
+
+```
+
+## Identify unique functions for each species
+```{r}
+arbacia_pathways <- plot_data %>%
+  filter(species == "ARBACIA" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+paracentrotus_pathways <- plot_data %>%
+  filter(species == "PARACENT" & count > 0.0001) %>%
+  pull(faprotax.function) %>%
+  unique()
+
+# Compare unique and shared pathways
+unique_to_arbacia <- setdiff(arbacia_pathways, paracentrotus_pathways)
+unique_to_paracentrotus <- setdiff(paracentrotus_pathways, arbacia_pathways)
+shared_pathways <- intersect(arbacia_pathways, paracentrotus_pathways)
+
+cat("Unique to Arbacia:", length(unique_to_arbacia), "\n")
+cat("Unique to Paracentrotus:", length(unique_to_paracentrotus), "\n")
+cat("Shared Pathways:", length(shared_pathways), "\n")
+```
+
+## Bar plot with functions for each species 
+```{r}
+# Filter functions with counts > 0.0001 in at least one species
+filtered_species_means <- species_means %>%
+  group_by(faprotax.function) %>%
+  filter(any(count > 0.0001)) %>%
+  ungroup()
+
+## Order for total abundance of functions
+# Calculate total abundance for each function
+total_abundance <- aggregate(count ~ faprotax.function, data = filtered_species_means, sum)
+# Order functions by total abundance (descending)
+ordered_functions <- total_abundance[order(-total_abundance$count), "faprotax.function"]
+# Update the factor levels for `faprotax.function`
+filtered_species_means$faprotax.function <- factor(
+  filtered_species_means$faprotax.function,
+  levels = ordered_functions
+)
+
+# Create the plot 
+p <- ggplot(filtered_species_means, aes(x = faprotax.function, y = count, fill = species)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +  # Bars
+  geom_errorbar(
+    aes(ymin = count - se_count, ymax = count + se_count),
+    position = position_dodge(width = 0.7),
+    width = 0.2,
+    color = "black"  # Error bars in black for visibility
+  ) +
+  scale_fill_manual(values = c("ARBACIA" = "#985D6D", "PARACENT" = "#C9D887")) +
+  #scale_y_continuous(
+    #limits = c(0.001, 0.5),  # Set Y-axis limits
+    #breaks = c(0.0001, 0.001, 0.01, 0.1, 1),  # Define custom breaks
+    #labels = scales::label_number()  # Ensure readable labels
+  #) +
+  theme_minimal(base_size = 12) +  # Clean base theme
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background
+    panel.grid.major = element_blank(),  # Remove gridlines
+    panel.grid.minor = element_blank(),  # Remove minor gridlines
+    axis.line = element_line(color = "black"),  # Black X and Y axis lines
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 10),  # Rotate and adjust X-axis text
+    axis.text.y = element_text(size = 10),
+    legend.position = "top",
+    legend.title = element_blank(),  # Simplify legend
+    plot.title = element_text(size = 14, face = "bold"),  # Title styling
+    plot.subtitle = element_text(size = 12, face = "italic")  # Subtitle styling
+  ) +
+  labs(
+    title = "Relative Abundance of Predicted Functions by Species",
+    subtitle = "Y-axis transformed using log10 scale",
+    x = "Function",
+    y = "Relative Abundance",
+    fill = "Species"
+  )
+
+# Tranform the y-axis to log10 scale to show the low abundant functions (set ylim more than 0 otherwise can't tranf log10(0))
+p2 <- p + coord_trans(y = "log2", ylim = c(0.0001, 1))+ 
+      scale_y_continuous(
+        breaks = c(0.0001, 0.001, 0.01, 0.1, 1),  # Define custom breaks
+        labels = scales::label_number()
+        ) 
+```
+
+## Statistical test
+```{r}
+plot_data
+write.csv(plot_data, "Species_functions_data.csv")
+
+functions <- unique(plot_data$faprotax.function)
+
+# Create a data frame to store results
+kruskal_results <- data.frame()
+
+for (func in functions) {
+  subset_data <- filter(plot_data, faprotax.function == func)
+  
+  # Perform Kruskal-Wallis test
+  kruskal_test <- kruskal.test(count ~ species, data = subset_data)
+  
+  # Store results
+  kruskal_results <- rbind(kruskal_results, 
+                           data.frame(
+                             Function = func,
+                             Statistic = as.numeric(kruskal_test$statistic),
+                             P_value = kruskal_test$p.value
+                           ))
+}
+
+# Adjust p-values for multiple testing (Benjamini-Hochberg)
+kruskal_results$P_adj <- p.adjust(kruskal_results$P_value, method = "BH")
+
+write.csv(kruskal_results, "Functional_predictions_statisticaltest/Kruskal_Wallis_Results_Species.csv", row.names = FALSE)
+```
+
+
+# Subset Arbacia ST
+```{r}
+# Subset the faprotax table based on these sample IDs
+faprotax_Arb_TS <- as.data.frame(faprotax_table[, subset_Arb_TS])
+# Check the subsetted pathway abundance table
+head(faprotax_Arb_TS)
+
+colSums(faprotax_Arb_TS)
+
+# transform to relative abundances
+faprotax_Arb_TS_abundance_rel <- faprotax_Arb_TS %>%
+  filter(rowSums(faprotax_Arb_TS) > 0) %>%  # remove the rows that ara 0
+  mutate(across(where(is.numeric), ~ . / sum(.))) %>% # Divide by total sum
+  rownames_to_column(var = "faprotax.function")  # Move pathway_class to a column
+
+# Long-format for ggplot
+faprotax_Arb_TS_abundance_rel_long <- faprotax_Arb_TS_abundance_rel %>%
+  pivot_longer(-faprotax.function, names_to = "sample_name", values_to = "count")
+
+# add metadata
+plot_data_Arb_TS <- faprotax_Arb_TS_abundance_rel_long %>%
+  left_join(metadata_Arb_TS_subset, by = "sample_name")
+
+custom_palette2 <- colorRampPalette(brewer.pal(12, "Paired"))(38)
+
+# Taxa bar Plot
+plot_data_Arb_TS %>%
+  ggplot(aes(x = sample_name, y = count)) +
+  geom_bar(aes(fill = faprotax.function), stat = "identity", position = "fill") +
+  facet_grid(~ body.tissue, scales = "free_x") +
+  scale_y_continuous(name = "Relative abundance", labels = scales::percent) +
+  scale_fill_manual(values = custom_palette2) +
+  theme(axis.text.x = element_text(angle = 90), 
+        axis.text.y = element_text(color = "black"))
+
+```
+
+## Identify unique functions for each body type
+```{r}
+Arb_celo_pathways <- plot_data_Arb_TS %>%
+  filter(body.tissue == "CELO" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+Arb_cf_pathways <- plot_data_Arb_TS %>%
+  filter(body.tissue == "CF" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+Arb_caca_pathways <- plot_data_Arb_TS %>%
+  filter(body.tissue == "CACA" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+# Compare unique and shared pathways
+# Calculate intersections
+celo_cf_intersect <- intersect(Arb_celo_pathways, Arb_cf_pathways)
+celo_caca_intersect <- intersect(Arb_celo_pathways, Arb_caca_pathways)
+cf_caca_intersect <- intersect(Arb_cf_pathways, Arb_caca_pathways)
+# Calculate unique elements
+unique_celo <- setdiff(Arb_celo_pathways, union(Arb_cf_pathways, Arb_caca_pathways))
+unique_cf <- setdiff(Arb_cf_pathways, union(Arb_celo_pathways, Arb_caca_pathways))
+unique_caca <- setdiff(Arb_caca_pathways, union(Arb_celo_pathways, Arb_cf_pathways))
+
+# Intersection of all three
+all_three_intersect <- Reduce(intersect, list(Arb_celo_pathways, Arb_cf_pathways, Arb_caca_pathways))
+
+```
+
+## Bar plot with functions for each body tissue 
+```{r}
+# Calculate mean
+body_tissue_means <- aggregate(
+  count ~ body.tissue + faprotax.function,
+  data = plot_data_Arb_TS,
+  FUN = mean
+)
+# Calculate standard error
+body_tissue_se <- aggregate(
+  count ~ body.tissue + faprotax.function,
+  data = plot_data_Arb_TS,
+  FUN = se
+)
+# Merge mean and standard error into a single data frame
+body_tissue_means$se_count <- body_tissue_se$count
+
+
+# Filter functions with counts > 0.0001 in at least one species
+filtered_body_tissue_means <- body_tissue_means %>%
+  group_by(faprotax.function) %>%
+  filter(any(count > 0.0001)) %>%
+  ungroup()
+
+## Order for total abundance of functions
+# Calculate total abundance for each function
+total_abundance_Arb_ST <- aggregate(count ~ faprotax.function, data = filtered_body_tissue_means, sum)
+# Order functions by total abundance (descending)
+ordered_functions_Arb_ST <- total_abundance_Arb_ST[order(-total_abundance_Arb_ST$count), "faprotax.function"]
+# Update the factor levels for `faprotax.function`
+filtered_body_tissue_means$faprotax.function <- factor(
+  filtered_body_tissue_means$faprotax.function,
+  levels = ordered_functions_Arb_ST
+)
+
+# Create the plot 
+Arb_ST_functions_plot <- ggplot(filtered_body_tissue_means, aes(x = faprotax.function, y = count, fill = body.tissue)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +  # Bars
+  geom_errorbar(
+    aes(ymin = count - se_count, ymax = count + se_count),
+    position = position_dodge(width = 0.7),
+    width = 0.2,
+    color = "black"  # Error bars in black for visibility
+  ) +
+  scale_fill_manual(values = c(CELO="#F2AD00", CF="#F98400", CACA="#00A08A")) +
+  theme_minimal(base_size = 12) +  # Clean base theme
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background
+    panel.grid.major = element_blank(),  # Remove gridlines
+    panel.grid.minor = element_blank(),  # Remove minor gridlines
+    axis.line = element_line(color = "black"),  # Black X and Y axis lines
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 10),  # Rotate and adjust X-axis text
+    axis.text.y = element_text(size = 10),
+    legend.position = "top",
+    legend.title = element_blank(),  # Simplify legend
+    plot.title = element_text(size = 14, face = "bold"),  # Title styling
+    plot.subtitle = element_text(size = 12, face = "italic")  # Subtitle styling
+  ) +
+  labs(
+    title = "Relative Abundance of Predicted Functions by Body types Arbacia",
+    subtitle = "Y-axis transformed using log10 scale",
+    x = "Function",
+    y = "Relative Abundance",
+    fill = "Species"
+  )
+
+# Tranform the y-axis to log10 scale to show the low abundant functions (set ylim more than 0 otherwise can't tranf log10(0))
+Arb_ST_functions_plot <- Arb_ST_functions_plot + coord_trans(y = "log2", ylim = c(0.0001, 1))+ 
+      scale_y_continuous(
+        breaks = c(0.0001, 0.001, 0.01, 0.1, 1),  # Define custom breaks
+        labels = scales::label_number()
+        ) 
+```
+
+## Statistical test
+```{r}
+plot_data_Arb_TS
+write.csv(plot_data_Arb_TS, "plot_data_Arb_TS.csv")
+
+functions <- unique(plot_data_Arb_TS$faprotax.function)
+
+# Create a data frame to store results
+kruskal_results <- data.frame()
+
+for (func in functions) {
+  subset_data <- filter(plot_data_Arb_TS, faprotax.function == func)
+  
+  # Perform Kruskal-Wallis test
+  kruskal_test <- kruskal.test(count ~ body.tissue, data = subset_data)
+  
+  # Store results
+  kruskal_results <- rbind(kruskal_results, 
+                           data.frame(
+                             Function = func,
+                             Statistic = as.numeric(kruskal_test$statistic),
+                             P_value = kruskal_test$p.value
+                           ))
+}
+
+# Adjust p-values for multiple testing (Benjamini-Hochberg)
+kruskal_results$P_adj <- p.adjust(kruskal_results$P_value, method = "bonferroni")
+
+wilcoxon_results <- data.frame()
+
+for (func in functions) {
+  # Check if the Kruskal-Wallis test is significant
+  if (kruskal_results$P_value[kruskal_results$Function == func] < 0.05) {
+    subset_data <- filter(plot_data_Arb_TS, faprotax.function == func)
+    
+    # Perform pairwise Wilcoxon test
+    pairwise_test <- pairwise.wilcox.test(subset_data$count, 
+                                          subset_data$body.tissue, 
+                                          p.adjust.method = "BH")
+    
+    # Convert pairwise results into a data frame
+    pairwise_df <- as.data.frame(as.table(pairwise_test$p.value))
+    colnames(pairwise_df) <- c("Group1", "Group2", "P_value")
+    pairwise_df$Function <- func
+    
+    # Append to results
+    wilcoxon_results <- rbind(wilcoxon_results, pairwise_df)
+  }
+}
+
+write.csv(kruskal_results, "Functional_predictions_statisticaltest/Kruskal_Wallis_Results_Arb_ST.csv", row.names = FALSE)
+write.csv(wilcoxon_results, "Functional_predictions_statisticaltest/Pairwise_Wilcoxon_Results_Arb_ST.csv", row.names = FALSE)
+```
+
+# Subset Arbacia Location
+
+```{r}
+# Extract metadata from the phyloseq object
+metadata_Arb_LOC_subset <- data.frame(as(sample_data(Arb_LOC), "data.frame"))
+rownames(metadata_Arb_LOC_subset) <- metadata_Arb_LOC_subset$sample.id
+
+# Subset FAPROTAX table based on sample IDs
+subset_Arb_LOC <- metadata_Arb_LOC_subset$sample.id
+faprotax_Arb_LOC <- as.data.frame(faprotax_table[, subset_Arb_LOC])
+# Check the subsetted pathway abundance table
+head(faprotax_Arb_LOC)
+
+## Columns doesn't sum up to 1 so we need to normalize
+colSums(faprotax_Arb_LOC)
+# Normalize each column to sum to 1
+faprotax_Arb_LOC <- sweep(faprotax_Arb_LOC, 2, colSums(faprotax_Arb_LOC), "/")
+colSums(faprotax_Arb_LOC)
+
+# Remove rows that are all 0
+faprotax_Arb_LOC_rel <- faprotax_Arb_LOC %>%
+  filter(rowSums(faprotax_Arb_LOC) > 0) %>%  # Remove rows that are 0
+  rownames_to_column(var = "faprotax.function")  # Move function names to a column
+
+# Reshape to long format for plotting
+faprotax_Arb_LOC_rel_long <- faprotax_Arb_LOC_rel %>%
+  pivot_longer(-faprotax.function, names_to = "sample.id", values_to = "count")
+
+# Add METADATA to the long-format data
+plot_data_Arb_LOC <- faprotax_Arb_LOC_rel_long %>%
+  left_join(metadata_Arb_LOC_subset, by = "sample.id")
+
+# Aggregate data to calculate mean abundances and standard deviation per species
+# Convert species to factor
+plot_data_Arb_LOC <- plot_data_Arb_LOC %>%
+  mutate(place = as.factor(place)) %>%
+  mutate(faprotax.function = as.factor(faprotax.function))
+
+# Function to calculate standard error
+se <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(length(na.omit(x)))
+}
+# Calculate mean
+Arb_LOC_means <- aggregate(
+  count ~ place + faprotax.function,
+  data = plot_data_Arb_LOC,
+  FUN = mean
+)
+# Calculate standard error
+Arb_LOC_se <- aggregate(
+  count ~ place + faprotax.function,
+  data = plot_data_Arb_LOC,
+  FUN = se
+)
+# Merge mean and standard error into a single data frame
+Arb_LOC_means$se_count <- Arb_LOC_se$count
+
+# Stacked bar plot: Mean functional abundances by species
+custom_palette2 <- colorRampPalette(brewer.pal(12, "Paired"))(38)
+
+barplot_functions_Arb_LOC <- ggplot(Arb_LOC_means, aes(x = place, y = count, fill = faprotax.function)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(name = "Relative Abundance", labels = scales::percent) +
+  scale_fill_manual(values = custom_palette2) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right") +
+  labs(title = "FAPROTAX Functional Predictions in Arbacia by Location", x = "Location")
+
+```
+
+## Identify unique functions for each species
+```{r}
+Arb_blanes_pathways <- plot_data_Arb_LOC %>%
+  filter(place == "BLANES" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+Arb_palma_pathways <- plot_data_Arb_LOC %>%
+  filter(place == "CONTROL" & count > 0.0001) %>%  # Filter meaningful functions
+  pull(faprotax.function) %>%
+  unique()
+
+
+# Compare unique and shared pathways
+unique_to_arb_blanes <- setdiff(Arb_blanes_pathways, Arb_palma_pathways)
+unique_to_arb_palma <- setdiff(Arb_palma_pathways, Arb_blanes_pathways)
+shared_pathways <- intersect(Arb_blanes_pathways, Arb_blanes_pathways)
+
+cat("Unique to Arbacia Blanes:", length(unique_to_arb_blanes), "\n")
+cat("Unique to Arbacia Palma:", length(unique_to_arb_palma), "\n")
+cat("Shared Pathways:", length(shared_pathways), "\n")
+```
+
+## Bar plot with functions for each location
+```{r}
+# Filter functions with counts > 0.0001 in at least one location
+filtered_Arb_LOC_means <- Arb_LOC_means %>%
+  group_by(faprotax.function) %>%
+  filter(any(count > 0.0001)) %>%
+  ungroup()
+
+## Order for total abundance of functions
+# Calculate total abundance for each function
+total_abundance_Arb_LOC <- aggregate(count ~ faprotax.function, data = filtered_Arb_LOC_means, sum)
+# Order functions by total abundance (descending)
+ordered_functions_Arb_LOC <- total_abundance_Arb_LOC[order(-total_abundance_Arb_LOC$count), "faprotax.function"]
+# Update the factor levels for `faprotax.function`
+filtered_Arb_LOC_means$faprotax.function <- factor(
+  filtered_Arb_LOC_means$faprotax.function,
+  levels = ordered_functions_Arb_LOC)
+
+# Create the plot 
+Arb_LOC_functions_plot <- ggplot(filtered_Arb_LOC_means, aes(x = faprotax.function, y = count, fill = place)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +  # Bars
+  geom_errorbar(
+    aes(ymin = count - se_count, ymax = count + se_count),
+    position = position_dodge(width = 0.7),
+    width = 0.2,
+    color = "black"  # Error bars in black for visibility
+  ) +
+  scale_fill_manual(values = c("BLANES" = "#FD6467", "CONTROL" = "#5B1A18")) +
+  theme_minimal(base_size = 12) +  # Clean base theme
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),  # White background
+    panel.grid.major = element_blank(),  # Remove gridlines
+    panel.grid.minor = element_blank(),  # Remove minor gridlines
+    axis.line = element_line(color = "black"),  # Black X and Y axis lines
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 10),  # Rotate and adjust X-axis text
+    axis.text.y = element_text(size = 10),
+    legend.position = "top",
+    legend.title = element_blank(),  # Simplify legend
+    plot.title = element_text(size = 14, face = "bold"),  # Title styling
+    plot.subtitle = element_text(size = 12, face = "italic")  # Subtitle styling
+  ) +
+  labs(
+    title = "Relative Abundance of Predicted Functions by Location in Arbacia",
+    subtitle = "Y-axis transformed using log10 scale",
+    x = "Function",
+    y = "Relative Abundance",
+    fill = "Species"
+  )
+
+# Tranform the y-axis to log10 scale to show the low abundant functions (set ylim more than 0 otherwise can't tranf log10(0))
+Arb_LOC_functions_plot <- Arb_LOC_functions_plot + coord_trans(y = "log2", ylim = c(0.0001, 1))+ 
+      scale_y_continuous(
+        breaks = c(0.0001, 0.001, 0.01, 0.1, 1),  # Define custom breaks
+        labels = scales::label_number()
+        ) 
+```
