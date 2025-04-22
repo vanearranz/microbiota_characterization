@@ -278,11 +278,11 @@ python3	./collapse_table.py -i table-with-taxonomyv2.txt -g FAPROTAX.txt -f -o f
 ```
 Statistical analysis and plots 
 
-**[Results](https://github.com/vanearranz/)** : Use the R Script
+**[Results](https://github.com/vanearranz/microbiota_characterization/tree/main#:~:text=12%20Commits-,Functional_predictions2.Rmd,-Create%20Functional_predictions2.Rmd)**: Use the R Script
 
 Functional analysis including statistical comparisons with FAPROTAX database
 
-**[Fuctional analysis](https://github.com/vanearranz/Metabarcoding_CO1_kelpholdfast/blob/main/4.MorphologyvsMetabarcoding.R)** : Use 4.MorphologyvsMetabarcoding.R
+**[Fuctional analysis](https://github.com/vanearranz/microbiota_characterization/tree/main#:~:text=now-,microbiome_Adult_seaurchin2.Rmd,-Create%20microbiome_Adult_seaurchin2.Rmd)** 
 
-All the results are included in the manuscript "Metabarcoding hyperdiverse kelp holdfast communities on temperate reefs: an experimental approach to inform future studies." by Vanessa Arranz, Libby Liggins and J. David Aguirre. 
+All the results are included in the manuscript "XXXXX" by Vanessa Arranz et al. 
 
