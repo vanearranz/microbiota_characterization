@@ -275,11 +275,9 @@ python3	./collapse_table.py -i table-with-taxonomyv2.txt -g FAPROTAX.txt -f -o f
 
 ### STATISTICAL ANALYSIS AND VISUALIZATIONS IN R 
 
-Statistical analysis and plots 
 **[Statiscal analysis and visualizations](https://github.com/vanearranz/microbiota_characterization/tree/main#:~:text=12%20Commits-,Functional_predictions2.Rmd,-Create%20Functional_predictions2.Rmd)** Use the R markdown : microbiome_Adult_seaurchin2.Rmd
 
-Functional analysis including statistical comparisons with FAPROTAX database
-**[Fuctional analysis](https://github.com/vanearranz/microbiota_characterization/tree/main#:~:text=now-,microbiome_Adult_seaurchin2.Rmd,-Create%20microbiome_Adult_seaurchin2.Rmd)** Use the R markdown Functional_predictions2.Rmd
+**[Fuctional analysis and statistical comparisons](https://github.com/vanearranz/microbiota_characterization/tree/main#:~:text=now-,microbiome_Adult_seaurchin2.Rmd,-Create%20microbiome_Adult_seaurchin2.Rmd)** Use the R markdown Functional_predictions2.Rmd
 
 All the results are included in the manuscript "XXXXX" by Vanessa Arranz et al. 
 
