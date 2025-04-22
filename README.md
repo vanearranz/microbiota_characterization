@@ -254,4 +254,23 @@ Now that we have the necessary files we will hop onto Phyloseq in R
 ```
 # Move the PhyloSeq folder to my local computer
 scp -r intern@161.116.67.159:~/data/data/Microbiota_adults/Phyloseq /Users/vanessaarranz/Desktop/Microbiota adultos Lea/
+
+# Add reference sequences for functional analisis
+scp -r intern@161.116.67.159:~/data/data/Microbiota_adults/Phyloseq/dna-sequences.fasta /Users/vanessaarranz/Desktop/Microbiota_adultos_Lea/Phyloseq
 ```
+
+### STEP 15 : FAPROTAX for functional annotations
+
+Download the pacakge 
+http://www.loucalab.com/archive/FAPROTAX/lib/php/index.php?section=Download
+
+Directory /Users/vanessaarranz/Desktop/Microbiota_adultos_Lea/Phyloseq/FAPROTAX_1.2.10
+
+# Convert biom table to tsv, because with biom didn't work
+biom convert -i table-with-taxonomyv2.biom -o table-with-taxonomyv2.txt --to-tsv --header-key taxonomy
+
+# Run command
+python3	./collapse_table.py -i table-with-taxonomyv2.txt -g FAPROTAX.txt -f -o functional_otu_table.tsv -r report.txt --column_names_are_in last_comment_line  --keep_header_comments --non_numeric consolidate -v --row_names_are_in_column "taxonomy" --omit_columns 0 --normalize_collapsed columns_before_collapsing --group_leftovers_as 'other'
+
+### ANALYSIS IN R 
+
