@@ -1,0 +1,3123 @@
+---
+title: "Adult microbiome analysis"
+author: "Vanessa Arranz"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set working direectory 
+
+```{r}
+setwd("~/Desktop/Microbiota_adultos_Lea/Phyloseq")
+```
+
+
+## Install libraries
+```{r}
+#source('http://bioconductor.org/biocLite.R')
+#biocLite('phyloseq')
+library("phyloseq")
+#biocLite("biomformat")
+library("biomformat")
+#install.packages("ggplot2")
+library("ggplot2")
+#install.packages("ggpubr")
+library("ggpubr")
+#install.packages("RColorBrewer")
+library("RColorBrewer")
+#install.packages("vegan")
+library("vegan")
+#install.packages("grid")
+library("grid")
+#install.packages("rstatix")
+library(rstatix)
+#install.packages("magrittr")
+library(magrittr)
+library(dplyr)
+library(plyr)
+library(broom)
+library('stringr')
+#if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+#devtools::install_github("jbisanz/qiime2R")
+library('qiime2R')
+#devtools::install_github("microbiome/microbiome") # Install the package
+library('decontam')
+library(microbiome)
+#devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+#devtools::install_github("microsud/microbiomeutilities")
+library(microbiomeutilities)
+#install.packages("wesanderson")
+library(wesanderson)
+#install.packages("eulerr")
+library(eulerr)
+#install.packages("picante")
+library(picante)
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("ANCOMBC")
+library(ANCOMBC)
+library(tidyr)
+#install.packages("ggvenn")
+library(ggvenn)
+#install.packages("lmPerm")
+library(lmPerm)
+#install.packages("phytools")
+library(phytools)
+#install.packages("RVAideMemoire")
+library(RVAideMemoire)
+```
+
+## Load data into Phyloseq object 
+```{r}
+## we can also import the qza artifacts from qiime2 directly with qiime2R
+#follow this : https://github.com/jbisanz/qiime2R
+
+#add biome table, tree and metadata
+biom_data <- import_biom(BIOMfilename = "table-with-taxonomyv2.biom", 
+                         treefilename = "tree.nwk")
+mapping_file <- import_qiime_sample_data(mapfilename = "METADATA_microbiota.tsv")
+
+# Merge the OTU and mapping data into a phyloseq object
+phylo <- merge_phyloseq(biom_data, mapping_file)
+#Add names to biom table and check phyloseq objects
+colnames(tax_table(phylo))= c("Kingdom","Phylum","Class","Order","Family","Genus", "Species")
+rank_names(phylo)
+
+# Path to your exported FASTA file
+fasta_path <- "dna-sequences.fasta"
+rep_seqs <- Biostrings::readDNAStringSet(fasta_path)
+# Add sequences to the phyloseq object
+phylo <- phyloseq::merge_phyloseq(phylo, refseq(rep_seqs))
+
+# Start to explore the data a bit 
+#number of samples
+nsamples(phylo)
+# number of sequence variants
+ntaxa(phylo)
+#summary statistics of sampling depth
+depths <- sample_sums(phylo)
+summary(depths)
+# We see that we have samples with a very low sequencing depth > we can remove the sample
+
+
+otu_tab <- t(abundances(phylo))
+p <- vegan::rarecurve(otu_tab, 
+                      step = 50, label = FALSE, 
+                      sample = min(rowSums(otu_tab), 
+                                   col = "blue", cex = 0.6))
+p
+
+```
+
+## Remove contaminants with decontam package
+```{r}
+# remove samples D6306_1
+phylo <- subset_samples(phylo, sample.id != "D6306_1")
+
+sample_data(phylo)$is.neg <- sample_data(phylo)$group_ST == "BLANK"
+contamdf.prev <- isContaminant(phylo, method="prevalence", neg="is.neg", threshold =0.2)
+table(contamdf.prev$contaminant)
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(phylo, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(phylo)$group_ST == "BLANK", phylo)
+ps.pa.pos <- prune_samples(sample_data(phylo)$group_ST != "BLANK", phylo)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+# Extract contaminants
+phylo <- prune_taxa(!contamdf.prev$contaminant, phylo)
+
+```
+
+## Taxa bar plots
+
+```{r}
+microbiome::summarize_phyloseq(phylo)
+
+otu_tab <- microbiome::abundances(phylo)
+otu_tab[1:5,1:5]
+
+tax_tab <- phyloseq::tax_table(phylo)
+tax_tab[1:5,1:5]
+```
+### Clean taxonomy table 
+```{r}
+## Taxonomy ranks with proper names 
+tax_table_clean <- tax_table(phylo)
+# Remove prefixes d__, p__, etc.
+tax_table_clean <- apply(tax_table_clean, 2, function(x) gsub("^[a-z]__", "", x))
+# Assign the cleaned table back to the phyloseq object
+tax_table(phylo) <- tax_table_clean
+phyloseq::tax_table(phylo)[1:3,1:3]
+
+# ASV names from dada are long - change to ASVX... 
+taxa_names(phylo)[1:5]
+taxa_names(phylo) <- paste0("ASV", seq(ntaxa(phylo)))
+
+# Remove special characters
+tax_table(phylo)[,colnames(tax_table(phylo))] <- gsub(tax_table(phylo)[,colnames(tax_table(phylo))],pattern="=*",replacement="")
+
+# remove asterisk
+tax_table(phylo)[,colnames(tax_table(phylo))] <- gsub(tax_table(phylo)[,colnames(tax_table(phylo))],pattern="[*]",replacement="") # notice here the square brackets. These are required when special characters such as * and ~ below are used as they have functional role in R base programming. 
+
+# remove ~
+tax_table(phylo)[,colnames(tax_table(phylo))] <- gsub(tax_table(phylo)[,colnames(tax_table(phylo))],pattern="[~]",replacement="")
+
+# Update column name Domain instead of Kingdom (for core microbiome)
+tax_df <- as.data.frame(tax_table(phylo))  # Extract the taxonomy table
+colnames(tax_df)[colnames(tax_df) == "Kingdom"] <- "Domain"  # Rename Kingdom to Domain
+tax_table(phylo) <- as.matrix(tax_df)  # Update the phyloseq object
+```
+
+### All samples at Phylum level 
+```{r}
+# Subset only the samples included in Sample Type
+phylo2 <- phylo %>% subset_samples(enfermo == "NO")
+phylo2 <- phylo2 %>% subset_samples(place == "CONTROL"| place == "BLANES") 
+# Subset samples with total reads > 3000
+phylo2 <- prune_samples(sample_sums(phylo2) > 3000, phylo2)
+#Also subset "PC2CF" and "EPI"?
+phylo2 <- prune_samples(!(sample_names(phylo2) %in% "PC2CF"), phylo2)
+
+sample_data(phylo2)
+
+ps2.pruned <- prune_taxa(taxa_sums(phylo2) >0, phylo2)
+
+# merge all taxa that are detected rare
+# I used this with all the samples
+ps2.phy <- aggregate_rare(ps2.pruned, level="Phylum", detection = 0.1, prevalence = 0.5)
+
+tax_table(ps2.phy)
+
+#Plot phylum
+
+# Count families
+n_phyla <- length(unique(tax_table(ps2.phy)[, "Phylum"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_phyla)
+### Total counts
+p.phy <- plot_composition(ps2.phy, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Phyla", values = custom_palette)
+p.phy
+
+### Relative abundances
+pseq.phyrel <- microbiome::transform(ps2.phy, "compositional")
+
+p.phy.rel <- plot_composition(pseq.phyrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Phyla", values = custom_palette)
+p.phy.rel
+```
+
+### All samples at Family level 
+```{r}
+
+# merge all taxa that are detected rare
+# I used this with all the samples
+ps2.fam <- aggregate_rare(ps2.pruned, level="Family", detection = 50, prevalence = 25/nsamples(ps2.pruned))
+
+tax_table(ps2.fam)
+
+#Plot family
+
+# Count families
+n_families <- length(unique(tax_table(ps2.fam)[, "Family"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_families)
+
+### Total counts
+p.fam <- plot_composition(ps2.fam, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam
+
+### Relative abundances
+pseq.famrel <- microbiome::transform(ps2.fam, "compositional")
+
+p.fam.rel <- plot_composition(pseq.famrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam.rel
+```
+
+# SPECIES
+
+## Taxa bar plots both species
+```{r}
+# Subset samples from the location
+ps_SP1 <- subset_samples(phylo, body.tissue!="CACA" & body.tissue!="EPI" & place=="CONTROL" & enfermo!="SI")
+sample_data(ps_SP)
+
+#Including CACA
+ps_SP <- subset_samples(phylo, body.tissue!="EPI" & place=="CONTROL" & enfermo!="SI")
+sample_data(ps_SP)
+
+# remove the same that are removed by rarefaction and outliers
+ps_SP <- prune_samples(!(sample_names(ps_SP) %in% c("AC10CF", "AC4CF", "AC8CF", "AC1C", "AC10C")), ps_SP)
+#I can also prune "AC10C"
+
+ps_SP <- prune_samples(!(sample_names(ps_SP) %in% c("PC2CF","PC9CF","PC6CF")), ps_SP)
+
+table(
+  body.tissue = sample_data(ps_SP)$body.tissue,
+  species = sample_data(ps_SP)$species)
+
+# Rarefy 3000reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+ps_SP_rare <- rarefy_even_depth(ps_SP, sample.size = 3000)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(ps_SP_rare, "Phylum")
+```
+
+```{r}
+# merge all taxa that are detected rare
+ps_SP.fam <- aggregate_rare(ps_SP, level="Family", detection = 0.25, prevalence = 0.75)
+
+ps_SP.phy <- aggregate_rare(ps_SP, level="Phylum", detection = 0.01, prevalence = 0.5)
+
+#Plot family composition
+
+# Count families
+n_families <- length(unique(tax_table(ps_SP.fam)[, "Family"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_families)
+
+# Count phyla
+n_phyla <- length(unique(tax_table(ps_SP.phy)[, "Phylum"]))
+# Generate a long palette
+custom_palette2 <- colorRampPalette(brewer.pal(12, "Paired"))(n_phyla)
+
+### Total counts
+p.fam <- plot_composition(ps_SP.fam, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam
+
+### Relative abundances FAMILY
+pseq_SP.famrel <- microbiome::transform(ps_SP.fam, "compositional")
+
+p_SP.fam.rel <- plot_composition(pseq_SP.famrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p_SP.fam.rel
+
+# Extract data to report 
+data_famrel_SP <- psmelt(pseq_SP.famrel)
+data_famrel_SP$species <- as.factor(data_famrel_SP$species)
+# Calculate average relative abundance
+relative_abundance_fam_SP <- aggregate(
+  Abundance ~ species + Family,
+  data = data_famrel_SP,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_fam_SP$RelativeAbundance <- relative_abundance_fam_SP$Abundance * 100
+
+### Relative abundances PHYLUM
+pseq_SP.phyrel <- microbiome::transform(ps_SP.phy, "compositional")
+
+p_SP.phy.rel <- plot_composition(pseq_SP.phyrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Phylum", values = custom_palette)
+p_SP.phy.rel
+
+p_SP.phy.rel <- plot_composition(pseq_SP.phyrel, 
+                                  average_by = "species") +
+        guides(fill = guide_legend(ncol = 1)) + 
+        labs(x = "Samples", 
+            y = "Relative abundance",
+        title = "Relative abundance data", 
+        subtitle = "Average by location and species") +
+  scale_fill_manual("Phylum", values = custom_palette2)
+p_SP.phy.rel
+
+# Extract data to report 
+data_phyrel_SP <- psmelt(pseq_SP.phyrel)
+data_phyrel_SP$species <- as.factor(data_phyrel_SP$species)
+# Calculate average relative abundance
+relative_abundance_phy_SP <- aggregate(
+  Abundance ~ species + Phylum,
+  data = data_phyrel_SP,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_phy_SP$RelativeAbundance <- relative_abundance_phy_SP$Abundance * 100
+```
+
+#1. Alpha diversity 
+
+```{r}
+##### Non-phylogenetic diversity ####
+ps_SP.div <- alpha(ps_SP_rare, index = "all")
+BT.meta <- meta(ps_SP_rare) 
+
+##### Phylogenetic diversity ####
+ps_SP_rare.asvtab <- as.data.frame(ps_SP_rare@otu_table)
+ps_SP_rare.tree <- ps_SP_rare@phy_tree
+
+ps_SP_rare.pd <- pd(t(ps_SP_rare.asvtab), ps_SP_rare.tree, include.root=F)
+
+## Add to the previous dataframe with diversity indices: ps_SP.div.df
+ps_SP.div$Phylogenetic_Diversity <- ps_SP_rare.pd$PD
+
+# Alpha diversity indices
+BT_adiv <- rbind(
+  data.frame(
+    sample.id = BT.meta$sample.id,
+    body.tissue = BT.meta$body.tissue,
+    species = BT.meta$species,
+    observed = ps_SP.div$observed,
+    shannon = ps_SP.div$diversity_shannon,
+    phylogenetic_diversity = ps_SP.div$Phylogenetic_Diversity
+  )
+)
+
+shapiro.test(ps_SP.div$diversity_shannon) 
+shapiro.test(ps_SP.div$observed)
+shapiro.test(ps_SP.div$Phylogenetic_Diversity)
+
+perm_model_Shannon <- lmp(BT_adiv$shannon ~ species * body.tissue, data = BT_adiv, perm="Prob")
+anova(perm_model_Shannon)
+
+perm_model_Observed <- lmp(BT_adiv$observed ~ species * body.tissue, data = BT_adiv, perm="Prob")
+anova(perm_model_Observed)
+
+perm_model_pd <- lmp(BT_adiv$phylogenetic_diversity ~ species * body.tissue, data = BT_adiv, perm="Prob")
+anova(perm_model_pd)
+
+BT_adiv_melt <- reshape2::melt(BT_adiv)
+
+head(BT_adiv_melt)
+
+# Now use this data frame to plot 
+# color procrastination 
+# Extract the next 3 colors (e.g., colors 4 to 6 in the palette WesAnderson)
+my_colors_sp <- c("#985D6D","#C9D887")
+
+p2 <- ggboxplot(ps_SP.div.df2_melt, x = "species", y = "value",
+              fill = "species", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = my_colors_sp)
+p2
+
+```
+
+#2. Beta diversity
+
+```{r}
+
+summarize_phyloseq(ps_SP_rare)
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+ps_SP_rare.filtered <- core(ps_SP_rare, detection = 10, prevalence = 0.05)
+summarize_phyloseq(ps_SP_rare.filtered)
+## the sparcity is reduced significantly from 0.84 to 0.76
+
+## Unweighted Unifrac #### 
+ps_SP_unwt.uni <- ordinate(ps_SP_rare.filtered, "PCoA", "unifrac", weighted=F)
+
+ps_SP_unwt.uni.plot <- plot_ordination(ps_SP_rare.filtered, 
+                        ps_SP_unwt.uni, color="species", shape ="body.tissue") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(name = "species", 
+                                           values = my_colors_sp)
+print(ps_SP_unwt.uni.plot)
+  
+### PERMANOVA 
+ps_SP.meta <- meta(ps_SP_rare)
+
+# Distance matrix
+set.seed(1)
+ps_SP_uwt_unifrac.dist <- UniFrac(ps_SP_rare.filtered, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+
+## We use a nested PERMANOVA model with species as a fixed factor and body.tissue as an additional fixed factor and the interaction to assess whether microbial community composition differed between species and among tissue types within species.
+ps_SP_uwt_unifrac.dist_ST_BT <- adonis2(ps_SP_uwt_unifrac.dist ~ species * body.tissue, data = ps_SP.meta, by="terms")
+ps_SP_uwt_unifrac.dist_ST_BT
+
+## Checking Homogenity of Variance 
+ps_SP_uwt_unifrac.dist_SIG_DISP <- betadisper(ps_SP_uwt_unifrac.dist, ps_SP.meta$group_ST)
+permutest(ps_SP_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+# Pairwise comparisons species
+pairwise.adonis(ps_SP_uwt_unifrac.dist, ps_SP.meta$species, sim.method = "unifrac")
+
+# Pairwise comparisons species:body.tissue
+pairwise.adonis(ps_SP_uwt_unifrac.dist, ps_SP.meta$group_ST, p.adjust.m = "bonferroni")
+
+# Pairwise comparisons species:body.tissue
+pairwise.adonis(ps_SP_uwt_unifrac.dist, ps_SP.meta$body.tissue, p.adjust.m = "bonferroni")
+
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Par_TS.rel)
+ps_SP.rel <- microbiome::transform(ps_SP_rare, "compositional")
+
+ps_SP_wt.uni <- ordinate(ps_SP.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(ps_SP_wt.uni$values$Eigenvalues[1:10])
+
+ps_SP_wt.uni.plot <- plot_ordination(ps_SP.rel, 
+                      ps_SP_wt.uni, color="species", shape="body.tissue") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      # add the sample names next to the point 
+                      #geom_text(aes(label = sample_names(ps_SP.rel)), 
+                                #hjust = 0, vjust = 0) +
+                      theme_classic() + 
+                      scale_color_manual(name = "species", 
+                                           values = my_colors_sp)
+print(ps_SP_wt.uni.plot)
+
+### PERMANOVA 
+ps_SP.meta <- meta(ps_SP_rare)
+
+set.seed(1)
+ps_SP_wt_unifrac.dist <- UniFrac(ps_SP.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+ps_SP_wt_unifrac.dist_SIG <- adonis2(ps_SP_wt_unifrac.dist ~ species * body.tissue, data = ps_SP.meta, by="terms")
+ps_SP_wt_unifrac.dist_SIG
+
+# Pairwise comparisons species
+pairwise.adonis(ps_SP_wt_unifrac.dist, ps_SP.meta$species, sim.method = "unifrac")
+# Pairwise comparisons species:body.tissue
+pairwise.adonis(ps_SP_wt_unifrac.dist, ps_SP.meta$group_ST, p.adjust.m = "bonferroni")
+# Pairwise comparisons species:body.tissue
+pairwise.adonis(ps_SP_wt_unifrac.dist, ps_SP.meta$body.tissue, p.adjust.m = "bonferroni")
+
+## Checking Homogenity of Variance 
+ps_SP_wt_unifrac.dist_SIG_DISP <- betadisper(ps_SP_wt_unifrac.dist, ps_SP.meta$group_ST)
+permutest(ps_SP_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+#3. Share core taxa between species 
+```{r}
+# convert to relative abundances
+ps_SP.rel <- microbiome::transform(ps_SP, "compositional")
+
+#Make a list of Sample types
+Species <- unique(as.character(meta(ps_SP.rel)$species))
+print(Species)
+
+list_core <- c() # an empty object to store information
+
+for (n in Species){ 
+    ps.sub <- subset_samples(ps_SP.rel.f, Species == n) # Choose sample from bosy.tissue by n
+    core_m <- core_members(ps.sub, 
+                           detection = 0.0001, 
+                           prevalence = 0.25)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) 
+  
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+
+plot(venn(list_core),
+     fills = my_colors_sp)
+
+print(list_core)
+
+```
+
+#4. Unique and shared taxa between species
+```{r}
+# ------------------------
+# Taxonomic Analysis at the ASV level
+# ------------------------
+# Subset by species
+arbacia_asv <- subset_samples(ps_SP, species == "ARBACIA")
+paracentrotus_asv <- subset_samples(ps_SP, species == "PARACENT")
+
+# Prune zero taxa
+arbacia_asv <- prune_taxa(taxa_sums(arbacia_asv) > 10, arbacia_asv)
+paracentrotus_asv <- prune_taxa(taxa_sums(paracentrotus_asv) > 10, paracentrotus_asv)
+
+# Extract asv names
+arbacia_asvnames <- taxa_names(arbacia_asv)
+paracentrotus_asvnames <- taxa_names(paracentrotus_asv)
+
+# Find unique and shared genera
+unique_asv_arbacia <- setdiff(arbacia_asvnames, paracentrotus_asvnames)
+unique_asv_paracentrotus <- setdiff(paracentrotus_asvnames, arbacia_asvnames)
+shared_asv <- intersect(arbacia_asvnames, paracentrotus_asvnames)
+
+# ------------------------
+# Taxonomic Analysis at the GENUS level
+# ------------------------
+ps_genus <- tax_glom(ps_SP_rare, taxrank = "Genus")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(ps_genus) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+arbacia_genus <- subset_samples(ps_genus, species == "ARBACIA")
+paracentrotus_genus <- subset_samples(ps_genus, species == "PARACENT")
+
+# Prune zero taxa
+arbacia_genus <- prune_taxa(taxa_sums(arbacia_genus) > 10, arbacia_genus)
+paracentrotus_genus <- prune_taxa(taxa_sums(paracentrotus_genus) > 10, paracentrotus_genus)
+
+# Extract genus names
+arbacia_genera <- taxa_names(arbacia_genus)
+paracentrotus_genera <- taxa_names(paracentrotus_genus)
+
+# Find unique and shared genera
+unique_genera_arbacia <- setdiff(arbacia_genera, paracentrotus_genera)
+unique_genera_paracentrotus <- setdiff(paracentrotus_genera, arbacia_genera)
+shared_genera <- intersect(arbacia_genera, paracentrotus_genera)
+
+# Tables of taxonomy info
+unique_arbacia_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genera_arbacia)
+unique_paracentrotus_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genera_paracentrotus)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_genera)
+
+write.csv(unique_arbacia_tax, "unique_arbacia_genus_taxonomy.csv", row.names = FALSE)
+write.csv(unique_paracentrotus_tax, "unique_paracentrotus_genus_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "shared_genus_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the FAMILY level
+# ------------------------
+ps_family <- tax_glom(ps_SP, taxrank = "Family")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(ps_family) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+arbacia_family <- subset_samples(ps_family, species == "ARBACIA")
+paracentrotus_family <- subset_samples(ps_family, species == "PARACENT")
+
+# Prune zero taxa
+arbacia_family <- prune_taxa(taxa_sums(arbacia_family) > 10, arbacia_family)
+paracentrotus_family <- prune_taxa(taxa_sums(paracentrotus_family) > 10, paracentrotus_family)
+
+# Extract family names
+arbacia_families <- taxa_names(arbacia_family)
+paracentrotus_families <- taxa_names(paracentrotus_family)
+
+# Find unique and shared families
+unique_families_arbacia <- setdiff(arbacia_families, paracentrotus_families)
+unique_families_paracentrotus <- setdiff(paracentrotus_families, arbacia_families)
+shared_families <- intersect(arbacia_families, paracentrotus_families)
+
+# Tables of taxonomy info
+unique_arbacia_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_families_arbacia)
+unique_paracentrotus_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_families_paracentrotus)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_families)
+
+write.csv(unique_arbacia_tax, "Unique_taxa/Species/unique_arbacia_fam_taxonomy.csv", row.names = FALSE)
+write.csv(unique_paracentrotus_tax, "Unique_taxa/Species/unique_paracentrotus_fam_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "Unique_taxa/Species/shared_fam_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the PHYLUM level
+# ------------------------
+ps_SP_phy <- tax_glom(ps_SP, taxrank = "Phylum")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(ps_SP_phy) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+arbacia_phy <- subset_samples(ps_SP_phy, species == "ARBACIA")
+paracentrotus_phy <- subset_samples(ps_SP_phy, species == "PARACENT")
+
+# Prune zero taxa
+arbacia_phy <- prune_taxa(taxa_sums(arbacia_phy) > 10, arbacia_phy)
+paracentrotus_phy <- prune_taxa(taxa_sums(paracentrotus_phy) > 10, paracentrotus_phy)
+
+# Extract family names
+arbacia_phy <- taxa_names(arbacia_phy)
+paracentrotus_phy <- taxa_names(paracentrotus_phy)
+
+# Find unique and shared families
+unique_phy_arbacia <- setdiff(arbacia_phy, paracentrotus_phy)
+unique_phy_paracentrotus <- setdiff(paracentrotus_phy, arbacia_phy)
+shared_phy <- intersect(arbacia_phy, paracentrotus_phy)
+
+# Tables of taxonomy info
+unique_arbacia_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_arbacia)
+unique_paracentrotus_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_paracentrotus)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_phy)
+
+# ------------------------
+# Generate Venn Diagrams for Genera & Families
+# ------------------------
+
+venn_data_asv <- list(
+  "Arbacia" = arbacia_asvnames,
+  "Paracentrotus" = paracentrotus_asvnames
+)
+
+venn_data_genus <- list(
+  "Arbacia" = arbacia_genera,
+  "Paracentrotus" = paracentrotus_genera
+)
+
+venn_data_family <- list(
+  "Arbacia" = arbacia_families,
+  "Paracentrotus" = paracentrotus_families
+)
+
+# ASV-level Venn Diagram
+ggvenn(venn_data_asv, 
+       fill_color = c("#985D6D", "#C9D887"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/Species/venn_diagram_asv2.png", dpi = 300)
+
+# Genus-level Venn Diagram
+ggvenn(venn_data_genus, 
+       fill_color = c("#985D6D", "#C9D887"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/Species/venn_diagram_genus.png", dpi = 300)
+
+# Family-level Venn Diagram
+ggvenn(venn_data_family, 
+       fill_color = c("#985D6D", "#C9D887"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/Species/venn_diagram_family.png", dpi = 300)
+
+```
+
+#5. Diferential abundance
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+# Let's perform this test at Genus level 
+ps_SP_genus <- phyloseq::tax_glom(ps_SP, taxrank = "Genus")
+
+# At family level there is no significant Diferential abundance
+ps_SP_fam <- phyloseq::tax_glom(ps_SP, taxrank = "Family")
+
+# At phylum level there is no significant Diferential abundance
+ps_SP_phy <- phyloseq::tax_glom(ps_SP, taxrank = "Phylum")
+
+### GENUS
+# Check which taxa have zero variance
+variance <- apply(otu_table(ps_SP_genus), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+# Remove taxa with zero variance from the phyloseq object
+ps_SP_genus_filtered <- prune_taxa(!taxa_names(ps_SP_genus) %in% taxa_to_remove, ps_SP_genus)
+# Manually remove the Genus taxa causing issues
+taxa_to_remove <- c("ASV1796", "ASV1991", "ASV2725", "ASV2772", "ASV2843", "ASV2886", "ASV3055", "ASV6093", "ASV6152", "ASV6245", "ASV6430", "ASV6683")
+# Remove these taxa from the phyloseq object
+ps_SP_genus_filtered2 <- prune_taxa(!taxa_names(ps_SP_genus_filtered) %in% taxa_to_remove, ps_SP_genus_filtered)
+
+### FAMILY 
+# Check which taxa have zero variance
+variance <- apply(otu_table(ps_SP_fam), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+# Remove taxa with zero variance from the phyloseq object
+ps_SP_fam_filtered <- prune_taxa(!taxa_names(ps_SP_fam) %in% taxa_to_remove, ps_SP_fam)
+
+### PHYLUM
+# Check which taxa have zero variance
+variance <- apply(otu_table(ps_SP_phy), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+# Remove taxa with zero variance from the phyloseq object
+ps_SP_phy_filtered <- prune_taxa(!taxa_names(ps_SP_phy) %in% taxa_to_remove, ps_SP_phy)
+
+
+# Perform ANCOM-BC analysis
+ancombc_results_phy_SP <- ancombc2(
+  data = ps_SP_phy_filtered,
+  fix_formula = "species", # Grouping variable
+  p_adj_method = "BH",  # Adjust p-values for multiple comparisons
+  prv_cut = 0.3,      # Filter features with >90% zeros = prevl in >10% of the samples
+  lib_cut = 1000,       # Filter samples with low library sizes
+  group = "species",   # Specify grouping variable
+  struc_zero = TRUE,    # Identify structural zeros
+  neg_lb = TRUE,        # Negative lower bound test       
+)
+
+res_ancombc_SP <-ancombc_results_SP$res
+
+res_ancombc_fam_SP <-ancombc_results_fam_SP$res
+
+res_ancombc_phy_SP <-ancombc_results_phy_SP$res
+
+# Extract the taxonomy table from the phyloseq object
+taxonomy_table <- as.data.frame(tax_table(ps_SP))
+# Merge the taxonomic names with your data
+# Assuming you want to display genus names
+taxonomy_table$ASV <- rownames(taxonomy_table)  # Create a column for ASV names
+# Merge the taxonomy data with the differential abundance results
+res_ancombc_SP$TaxonName <- taxonomy_table$Genus[match(res_ancombc_SP$taxon, taxonomy_table$ASV)]  # Adjust column name if needed
+
+# Write csv with ANCOM-BC results 
+write.csv(res_ancombc_SP, "ANCOM-BCresults/ANCOMBC_results_SPECIES.csv")
+
+write.csv(res_ancombc_fam_SP, "ANCOM-BCresults/ANCOMBC_results_fam_SPECIES.csv")
+
+write.csv(res_ancombc_phy_SP, "ANCOM-BCresults/ANCOMBC_results_phy_SPECIES.csv")
+
+## Waterfall plot
+
+# Extract relevant data for "speciesPARACENT"
+data <- data.frame(
+  Taxon = res_ancombc_phy_SP$taxon,  # Taxon names (e.g., ASVs)
+  LogFoldChange = res_ancombc_phy_SP$lfc_speciesPARACENT,  # Log fold change for speciesPARACENT
+  AdjPVal = res_ancombc_phy_SP$q_speciesPARACENT,  # Adjusted p-value for speciesPARACENT
+  TaxonName = res_ancombc_phy_SP$TaxonName
+)
+
+# Filter for significant results based on adjusted p-value
+data$Significant <- data$AdjPVal < 0.05  # You can adjust this threshold if needed
+data_significant <- data[data$Significant == TRUE, ]  # Only significant results
+
+# Sort by LogFoldChange for better visualization
+data_significant <- data_significant[order(data_significant$LogFoldChange), ]
+
+# Create a waterfall plot
+diff_abundance_plot <- ggplot(data_significant, aes(x = reorder(TaxonName, LogFoldChange), y = LogFoldChange, fill = LogFoldChange)) +
+  geom_bar(stat = "identity", width = 0.7) +  # Bar plot for LogFoldChange
+  coord_flip() +  # Flip coordinates to make it horizontal
+  scale_fill_gradient2(low = "#985D6D", mid = "white", high = "#C9D887", midpoint = 0, 
+                       name = "Abundance Direction") +  # Color scale based on LogFoldChange
+  labs(
+    title = "Differential Abundance Waterfall Plot",
+    x = "Taxa",
+    y = "Log-Fold Change"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 14)
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black")  # Add a horizontal zero line
+diff_abundance_plot
+```
+
+# SAMPLE TYPE
+## Taxa Bar plots both species Sample Type
+```{r}
+# Subset only the samples included in Sample Type
+phylo3 <- phylo %>% subset_samples(enfermo == "NO")
+phylo3 <- phylo3 %>% subset_samples(place == "CONTROL")
+# Subset samples with total reads > 3000
+phylo3 <- prune_samples(sample_sums(phylo3) > 3000, phylo3)
+#Also subset "PC2CF" 
+phylo3 <- phylo3 %>% subset_samples(body.tissue != "EPI")
+phylo3 <- prune_samples(!(sample_names(phylo3) %in% "PC2CF"), phylo3)
+
+sample_data(phylo3)
+
+ps3.pruned <- prune_taxa(taxa_sums(phylo3) >0, phylo3)
+
+# merge all taxa that are detected rare
+ps3.fam <- aggregate_rare(ps3.pruned, level="Family", detection = 0.25, prevalence = 0.75)
+tax_table(ps3.fam)
+
+# at phyla level
+ps3.phy <- aggregate_rare(ps3.pruned, level="Phylum", detection = 0.01, prevalence = 0.5)
+
+#Plot family
+# Count families
+n_families <- length(unique(tax_table(ps3.fam)[, "Family"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_families)
+
+### Total counts
+p.fam <- plot_composition(ps3.fam, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam
+
+### Relative abundances
+pseq.famrel <- microbiome::transform(ps3.fam, "compositional")
+
+p.fam.rel <- plot_composition(pseq.famrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam.rel
+
+### Group by Group_ST
+p.fam.rel <- plot_composition(pseq.famrel, 
+                          average_by = "group_ST") +
+        guides(fill = guide_legend(ncol = 1)) + 
+        labs(x = "Samples", 
+            y = "Relative abundance",
+        title = "Relative abundance data", 
+        subtitle = "Average by sample type and family") +
+  scale_fill_manual("Family", values = custom_palette)
+p.fam.rel
+
+# Extract data to report 
+data_famrel <- psmelt(pseq.famrel)
+data_famrel$group_ST <- as.factor(data_famrel$group_ST)
+# Calculate average relative abundance
+relative_abundance_fam <- aggregate(
+  Abundance ~ group_ST + Family,
+  data = data_famrel,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_fam$RelativeAbundance <- relative_abundance_fam$Abundance * 100
+
+## Plot by Group_ST at phyla level
+# count phyla
+n_phyla <- length(unique(tax_table(ps3.phy)[, "Phylum"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_phyla)
+
+# Calculate the relative abundances to report
+pseq.phyrel <- microbiome::transform(ps3.phy, "compositional")
+
+p.phy.rel <- plot_composition(pseq.phyrel, 
+                          average_by = "group_ST") +
+        guides(fill = guide_legend(ncol = 1)) + 
+        labs(x = "Samples", 
+            y = "Relative abundance",
+        title = "Relative abundance data", 
+        subtitle = "Average by sample type and phylum") +
+  scale_fill_manual("Phylum", values = custom_palette)
+p.phy.rel
+
+data_phyrel <- psmelt(pseq.phyrel)
+data_phyrel$group_ST <- as.factor(data_phyrel$group_ST)
+# Calculate average relative abundance
+relative_abundance_phy <- aggregate(
+  Abundance ~ group_ST + Phylum,
+  data = data_phyrel,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_phy$RelativeAbundance <- relative_abundance_phy$Abundance * 100
+# Format the RelativeAbundance column as regular numbers
+relative_abundance_phy$RelativeAbundance <- format(relative_abundance_phy$RelativeAbundance, scientific = FALSE)
+```
+
+## Arbacia
+```{r}
+# Subset samples Arbacia Sample type
+Arb_TS <- subset_samples(phylo, species=="ARBACIA" & place=="CONTROL")
+Arb_TS <- Arb_TS %>% subset_samples(body.tissue != "EPI")
+
+# Rarefy 8600reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+Arb_TS_rare <- rarefy_even_depth(Arb_TS, sample.size = 8600)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(Arb_TS_rare, "Phylum")
+```
+
+#1 Alpha diversity
+```{r}
+
+##### Non-phylogenetic diversity ####
+Arb_TS.div <- alpha(Arb_TS_rare, index = "all")
+# get the metadata out as separate object
+Arb_TS.meta <- meta(Arb_TS_rare)
+
+##### Phylogenetic diversity ####
+Arb_TS_rare.asvtab <- as.data.frame(Arb_TS_rare@otu_table)
+Arb_TS_rare.tree <- Arb_TS_rare@phy_tree
+
+#Phylogenetic diversity 
+Arb_TS_rare.pd <- pd(t(Arb_TS_rare.asvtab), Arb_TS_rare.tree,include.root=T)
+
+## Add to the previous dataframe with diversity indices: Arb_TS.div.df
+Arb_TS.div$Phylogenetic_Diversity <- Arb_TS_rare.pd$PD
+
+
+# Alpha diversity indices
+Arb_BT_adiv <- rbind(
+  data.frame(
+    sample.id = Arb_TS.meta$sample.id,
+    body.tissue = Arb_TS.meta$body.tissue,
+    observed = as.numeric(Arb_TS.div$observed),
+    shannon = as.numeric(Arb_TS.div$diversity_shannon),
+    phylogenetic_diversity = as.numeric(Arb_TS.div$Phylogenetic_Diversity)
+  )
+)
+
+shapiro.test(Arb_BT_adiv$diversity_shannon) 
+shapiro.test(Arb_BT_adiv$observed)
+shapiro.test(Arb_BT_adiv$phylogenetic_diversity)
+
+# LMP
+perm_model_Shannon <- lmp(Arb_BT_adiv$shannon ~ body.tissue, data = Arb_BT_adiv, perm="Prob")
+anova(perm_model_Shannon)
+# Pairwise comparisons
+pairwise.perm.t.test(Arb_BT_adiv$shannon, Arb_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+perm_model_Observed <- lmp(Arb_BT_adiv$observed ~ body.tissue, data = Arb_BT_adiv, perm="Prob")
+anova(perm_model_Observed)
+# Pairwise comparisons
+pairwise.perm.t.test(Arb_BT_adiv$observed, Arb_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+
+perm_model_pd <- lmp(Arb_BT_adiv$phylogenetic_diversity ~ body.tissue, data = Arb_BT_adiv, perm="Prob")
+anova(perm_model_pd)
+# Pairwise comparisons
+pairwise.perm.t.test(Arb_BT_adiv$phylogenetic_diversity, Arb_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+Arb_BT_adiv_melt <- reshape::melt(Arb_BT_adiv)
+
+# Now use this data frame to plot 
+# color procrastination 
+# Extract the next 3 colors (e.g., colors 4 to 6 in the palette)
+my_colors <- wes_palette("Darjeeling1")[2:4]
+my_colors <- c( "#F2AD00","#F98400","#00A08A") 
+p2 <- ggboxplot(Arb_BT_adiv_melt, x = "body.tissue", y = "value",
+              fill = "body.tissue", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = my_colors)
+p2
+```
+
+#2 Beta diversity
+
+```{r}
+
+Arb_TS_rare 
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+Arb_TS_rare.filtered <- core(Arb_TS_rare, detection = 10, prevalence = 0.05)
+
+summarize_phyloseq(Arb_TS_rare.filtered)
+## the sparcity is reduced significantly from 0.87 to 0.77, but it won't change much in our results
+
+
+## Unweighted Unifrac #### 
+###Unweighted Unifrac is based on presence/absence of different taxa and abundance is not important. However, it is sensitive to the sequencing depth.
+
+## By using the filtered dataset (Arb_TS_rare.filtered) the axis explained much higher proportion of the variation!!
+Arb_TS_unwt.uni <- ordinate(Arb_TS_rare.filtered, "PCoA", "unifrac", weighted=F)
+# check for Eigen values 
+barplot(Arb_TS_unwt.uni$values$Relative_eig[1:10])
+
+# change order here to match the previous graph
+my_colors2 <- c("#00A08A","#F2AD00","#F98400") 
+Arb_TS_unwt.uni.plot <- plot_ordination(Arb_TS_rare.filtered, 
+                        Arb_TS_unwt.uni, color="body.tissue") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(name = "body.tissue", 
+                                           values = my_colors2)
+print(Arb_TS_unwt.uni.plot)
+
+### PERMANOVA 
+Arb_TS.meta <- meta(Arb_TS_rare)
+
+set.seed(1)
+Arb_TS_uwt_unifrac.dist <- UniFrac(Arb_TS_rare, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Arb_TS_uwt_unifrac.dist_SIG <- adonis2(Arb_TS_uwt_unifrac.dist ~ body.tissue, data = Arb_TS.meta)
+
+## Pairwise permanova
+Arb_TS_uwt_unifrac.dist_SIG_PW <- pairwise.adonis(Arb_TS_uwt_unifrac.dist,Arb_TS.meta$body.tissue,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Arb_TS_uwt_unifrac.dist_SIG_DISP <- betadisper(Arb_TS_uwt_unifrac.dist, Arb_TS.meta$body.tissue)
+permutest(Arb_TS_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Arb_TS.rel)
+
+Arb_TS.rel <- microbiome::transform(Arb_TS_rare, "compositional")
+
+Arb_TS_wt.uni <- ordinate(Arb_TS.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(Arb_TS_wt.uni$values$Eigenvalues[1:10])
+
+Arb_TS_wt.uni.plot <- plot_ordination(Arb_TS.rel, 
+                      Arb_TS_wt.uni, color="body.tissue") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      theme_classic() + 
+                      scale_color_manual(name = "body.tissue", 
+                                           values = my_colors2)
+print(Arb_TS_wt.uni.plot)
+
+### PERMANOVA 
+Arb_TS.meta <- meta(Arb_TS_rare)
+
+set.seed(1)
+Arb_TS_wt_unifrac.dist <- UniFrac(Arb_TS.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Arb_TS_wt_unifrac.dist_SIG <- adonis2(Arb_TS_wt_unifrac.dist ~ body.tissue, data = Arb_TS.meta)
+
+
+## Pairwise permanova
+Arb_TS_wt_unifrac.dist_SIG_PW <- pairwise.adonis(Arb_TS_wt_unifrac.dist, Arb_TS.meta$body.tissue,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Arb_TS_wt_unifrac.dist_SIG_DISP <- betadisper(Arb_TS_wt_unifrac.dist, Arb_TS.meta$body.tissue)
+permutest(Arb_TS_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+
+
+#3 Share core taxa between sample types of Arbacia 
+
+```{r}
+Arb_TS_prune <- prune_samples(!(sample_names(Arb_TS) %in% c("AC10CF", "AC4CF", "AC8CF", "AC1C")), Arb_TS)
+# convert to relative abundances
+Arb_TS_prune.rel <- microbiome::transform(Arb_TS_prune, "compositional")
+
+#Make a list of Sample types
+sample_types <- unique(as.character(meta(Arb_TS_prune.rel)$body.tissue))
+print(sample_types)
+
+list_core <- c() # an empty object to store information
+
+for (n in sample_types){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    ps.sub <- subset_samples(Arb_TS_prune.rel.f, body.tissue == n) # Choose sample from bosy.tissue by n
+    core_m <- core_members(ps.sub,  
+                           detection = 0.0001, # 0.001 in atleast 60% samples 
+                           prevalence = 0.75)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each DiseaseState.
+    
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+
+# supplying colors in the order they appear in list_core
+mycols <- c(CELO="#F2AD00", CF="#F98400", CACA="#00A08A") 
+plot(venn(list_core),
+     fills = mycols)
+
+print(list_core)
+
+## to see the taxonomy of these ones 
+taxa_names(Arb_TS_prune.rel)[1:5]
+# format names
+Arb_TS_prune.rel.f <- format_to_besthit(Arb_TS_prune.rel)
+# check names
+taxa_names(Arb_TS_prune.rel.f)[1:5]
+### run the previous lopp with this new names : Arb_TS_prune.rel.f
+```
+
+#4. Unique and share taxa
+
+```{r}
+
+my_colors2 <- c( "#F2AD00", "#F98400", "#00A08A")  # CELO, CF, CACA
+
+# ------------------------
+# Taxonomic Analysis at the ASV level
+# ------------------------
+
+# Subset by tissue
+celo_asv <- subset_samples(Arb_TS_rare, body.tissue == "CELO")
+cf_asv <- subset_samples(Arb_TS_rare, body.tissue == "CF")
+caca_asv <- subset_samples(Arb_TS_rare, body.tissue == "CACA")
+
+# Prune low counts
+celo_asv <- prune_taxa(taxa_sums(celo_asv) > 10, celo_asv)
+cf_asv <- prune_taxa(taxa_sums(cf_asv) > 10, cf_asv)
+caca_asv <- prune_taxa(taxa_sums(caca_asv) > 10, caca_asv)
+
+# Taxa names
+asv_celo <- taxa_names(celo_asv)
+asv_cf <- taxa_names(cf_asv)
+asv_caca <- taxa_names(caca_asv)
+
+# Unique and shared
+asv_shared <- Reduce(intersect, list(asv_celo, asv_cf, asv_caca))
+asv_unique_celo <- setdiff(asv_celo, union(asv_cf, asv_caca))
+asv_unique_cf <- setdiff(asv_cf, union(asv_celo, asv_caca))
+asv_unique_caca <- setdiff(asv_caca, union(asv_celo, asv_cf))
+
+# Taxonomy table
+tax_asv <- tax_table(Arb_TS_rare) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+# Save taxonomy tables
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_celo), "Unique_taxa/ARBtissue/unique_asv_CELO.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_cf), "Unique_taxa/ARBtissue/unique_asv_CF.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_caca), "Unique_taxa/ARBtissue/unique_asv_CACA.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_shared), "Unique_taxa/ARBtissue/shared_asv.csv", row.names = FALSE)
+
+# Venn diagram
+venn_data_asv <- list(CELO = asv_celo, CF = asv_cf, CACA = asv_caca)
+ggvenn(venn_data_asv, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/ARBtissue/venn_diagram_asv.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the GENUS level
+# ------------------------
+ps_genus <- tax_glom(Arb_TS, taxrank = "Genus")
+tax_genus <- tax_table(ps_genus) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+# Subset + prune
+celo_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CELO")) > 10, subset_samples(ps_genus, body.tissue == "CELO"))
+cf_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CF")) > 10, subset_samples(ps_genus, body.tissue == "CF"))
+caca_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CACA")) > 10, subset_samples(ps_genus, body.tissue == "CACA"))
+
+# Taxa names
+genus_celo <- taxa_names(celo_genus)
+genus_cf <- taxa_names(cf_genus)
+genus_caca <- taxa_names(caca_genus)
+
+# Unique/shared
+shared_genus <- Reduce(intersect, list(genus_celo, genus_cf, genus_caca))
+unique_genus_celo <- setdiff(genus_celo, union(genus_cf, genus_caca))
+unique_genus_cf <- setdiff(genus_cf, union(genus_celo, genus_caca))
+unique_genus_caca <- setdiff(genus_caca, union(genus_celo, genus_cf))
+
+# Save taxonomy tables???
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_celo), "Unique_taxa/ARBtissue/unique_genus_CELO.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_cf), "Unique_taxa/ARBtissue/unique_genus_CF.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_caca), "Unique_taxa/ARBtissue/unique_genus_CACA.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% shared_genus), "Unique_taxa/ARBtissue/shared_genus.csv", row.names = FALSE)
+
+# Venn diagram
+venn_data_genus <- list(CELO = genus_celo, CF = genus_cf, CACA = genus_caca)
+ggvenn(venn_data_genus, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/ARBtissue/venn_diagram_genus.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the FAMILY level
+# ------------------------
+
+ps_family <- tax_glom(Arb_TS, taxrank = "Family")
+tax_family <- tax_table(ps_family) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+celo_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CELO")) > 10, subset_samples(ps_family, body.tissue == "CELO"))
+cf_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CF")) > 10, subset_samples(ps_family, body.tissue == "CF"))
+caca_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CACA")) > 10, subset_samples(ps_family, body.tissue == "CACA"))
+
+family_celo <- taxa_names(celo_family)
+family_cf <- taxa_names(cf_family)
+family_caca <- taxa_names(caca_family)
+
+shared_family <- Reduce(intersect, list(family_celo, family_cf, family_caca))
+unique_family_celo <- setdiff(family_celo, union(family_cf, family_caca))
+unique_family_cf <- setdiff(family_cf, union(family_celo, family_caca))
+unique_family_caca <- setdiff(family_caca, union(family_celo, family_cf))
+
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_celo), "Unique_taxa/ARBtissue/unique_family_CELO.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_cf), "Unique_taxa/ARBtissue/unique_family_CF.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_caca), "Unique_taxa/ARBtissue/unique_family_CACA.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% shared_family), "Unique_taxa/ARBtissue/shared_family.csv", row.names = FALSE)
+
+venn_data_family <- list(CELO = family_celo, CF = family_cf, CACA = family_caca)
+ggvenn(venn_data_family, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/ARBtissue/venn_diagram_family.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the PHYLUM level
+# ------------------------
+
+ps_phylum <- tax_glom(Arb_TS, taxrank = "Phylum")
+tax_phylum <- tax_table(ps_phylum) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+celo_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CELO")) > 10, subset_samples(ps_phylum, body.tissue == "CELO"))
+cf_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CF")) > 10, subset_samples(ps_phylum, body.tissue == "CF"))
+caca_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CACA")) > 10, subset_samples(ps_phylum, body.tissue == "CACA"))
+
+phy_celo <- taxa_names(celo_phy)
+phy_cf <- taxa_names(cf_phy)
+phy_caca <- taxa_names(caca_phy)
+
+shared_phy <- Reduce(intersect, list(phy_celo, phy_cf, phy_caca))
+unique_phy_celo <- setdiff(phy_celo, union(phy_cf, phy_caca))
+unique_phy_cf <- setdiff(phy_cf, union(phy_celo, phy_caca))
+unique_phy_caca <- setdiff(phy_caca, union(phy_celo, phy_cf))
+
+# Taxonomy table
+unique_celo_tax   <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_celo)
+unique_cf_tax     <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_cf)
+unique_caca_tax   <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_caca)
+shared_phy_tax  <- tax_phylum %>% filter(Taxa_ID %in% shared_phy)
+
+
+venn_data_phylum <- list(CELO = phy_celo, CF = phy_cf, CACA = phy_caca)
+ggvenn(venn_data_phylum, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/ARBtissue/venn_diagram_phylum.png", dpi = 300)
+
+```
+
+
+#5. Diferential abundance
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+# Let's perform this test at Genus level 
+Arb_TS_prune_genus <- phyloseq::tax_glom(Arb_TS_prune, taxrank = "Genus")
+Arb_TS_prune_fam <- phyloseq::tax_glom(Arb_TS_prune, taxrank = "Family")
+Arb_TS_prune_class <- phyloseq::tax_glom(Arb_TS_prune, taxrank = "Class")
+
+# Check which taxa have zero variance
+variance <- apply(otu_table(Arb_TS_prune_fam), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+
+# Remove taxa with zero variance from the phyloseq object
+Arb_TS_genus_filtered <- prune_taxa(!taxa_names(Arb_TS_prune_genus) %in% taxa_to_remove, Arb_TS_prune_genus)
+# Manually remove the taxa causing issues
+taxa_to_remove2 <- c("ASV1911", "ASV1956", "ASV1981", "ASV2046", "ASV2155", "ASV2424","ASV2928", "ASV2979", "ASV3052", "ASV3095", "ASV3226", "ASV3267","ASV3379", "ASV3564", "ASV4573", "ASV5884", "ASV6610", "ASV6670","ASV6774", "ASV6972", "ASV7233", "ASV7240", "ASV7656", "ASV9675","ASV9761", "ASV5917")
+
+# Remove taxa with zero variance from the phyloseq object
+Arb_TS_class_filtered <- prune_taxa(!taxa_names(Arb_TS_prune_class) %in% taxa_to_remove, Arb_TS_prune_class)
+
+# Remove taxa with zero variance from the phyloseq object
+Arb_TS_fam_filtered <- prune_taxa(!taxa_names(Arb_TS_prune_fam) %in% taxa_to_remove, Arb_TS_prune_fam)
+
+# Perform ANCOM-BC analysis
+ancombc_results_fam_Arb_ST <- ancombc2(
+  data = Arb_TS_fam_filtered,
+  fix_formula = "body.tissue", # Grouping variable
+  p_adj_method = "BH",  # Adjust p-values for multiple comparisons
+  prv_cut = 0.1,      # Filter features with >90% zeros = prevl in >10% of the samples
+  lib_cut = 1000,       # Filter samples with low library sizes
+  group = "body.tissue",   # Specify grouping variable
+  struc_zero = TRUE,    # Identify structural zeros
+  neg_lb = TRUE,        # Negative lower bound test       
+)
+
+ancombc_results_Arb_ST <-ancombc_results_Arb_ST$res
+ancombc_results_class_Arb_ST <-ancombc_results_class_Arb_ST$res
+ancombc_results_fam_Arb_ST <- ancombc_results_fam_Arb_ST$res
+
+## Heatmap with the two comparisons
+
+# Extract the taxonomy table from the phyloseq object
+taxonomy_table <- as.data.frame(tax_table(Arb_TS_genus_filtered))
+# Merge the taxonomic names with your data
+# Assuming you want to display genus names
+taxonomy_table$ASV <- rownames(taxonomy_table)  # Create a column for ASV names
+# Merge the taxonomy data with the differential abundance results
+ancombc_results_fam_Arb_ST$TaxonName <- taxonomy_table$Family[match(ancombc_results_fam_Arb_ST$taxon, taxonomy_table$ASV)]  # Adjust column name if needed
+
+# Write csv with ANCOM-BC results 
+write.csv(ancombc_results_Arb_ST, "ANCOM-BCresults/ANCOMBC_results_Arb_ST.csv")
+write.csv(ancombc_results_class_Arb_ST, "ANCOM-BCresults/ANCOMBC_results_class_Arb_ST.csv")
+write.csv(ancombc_results_fam_Arb_ST, "ANCOM-BCresults/ANCOMBC_results_fam_Arb_ST.csv")
+
+# Step 1: Prepare data for plotting
+df_fig_ancombc = ancombc_results_fam_Arb_ST %>% 
+  dplyr::select(taxon, TaxonName, lfc_body.tissueCELO, lfc_body.tissueCF, q_body.tissueCELO, q_body.tissueCF) %>%  # Select relevant columns
+  pivot_longer(cols = starts_with("lfc_"), names_to = "group", values_to = "value")%>%
+   mutate(significance = case_when(
+    group == "lfc_body.tissueCELO" & q_body.tissueCELO < 0.05 ~ "*",
+    group == "lfc_body.tissueCF" & q_body.tissueCF < 0.05 ~ "*",
+    TRUE ~ ""
+  )) %>% 
+  arrange(taxon)
+# Step 2: Calculate color scale limits
+lo = floor(min(df_fig_ancombc$value))
+up = ceiling(max(df_fig_ancombc$value))
+mid = (lo + up) / 2
+# Step 3: Create the heatmap plot
+p_ancombc <- ggplot(df_fig_ancombc, aes(x = group, y = TaxonName, fill = value)) + 
+  geom_tile(color = "black") +  
+  scale_fill_gradient2(low ="#00A08A", high ="orange", mid = "white",  
+                       na.value = "white", midpoint = mid,  
+                       limit = c(lo, up), name = "Log Fold Change") +
+  geom_text(aes(label = significance), color = "black", size = 8) +  # Asterisks 
+  scale_x_discrete(labels = c("lfc_body.tissueCELO" = "CELO vs. Feces", 
+                              "lfc_body.tissueCF" = "CF vs. Feces")) +  
+  labs(x = NULL, y = NULL, title = "Differential Abundance Heatmap (ANCOM-BC LFC)") +  
+  theme_minimal() +  
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.y = element_text(size = 14)
+        )
+p_ancombc
+```
+
+## Paracentrotus
+```{r}
+# Subset samples Arbacia Sample type
+Par_TS <- subset_samples(phylo, species=="PARACENT" & place=="CONTROL")
+Par_TS <- prune_samples(!(sample_names(Par_TS) %in% c("PC2CF","PC9CF","PC6CF")), Par_TS)
+
+# Rarefy 19900reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+Par_TS_rare <- rarefy_even_depth(Par_TS, sample.size = 19900)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(Par_TS_rare, "Phylum")
+```
+
+#1 Alpha diversity
+```{r}
+
+##### Non-phylogenetic diversity ####
+Par_TS.div <- alpha(Par_TS_rare, index = "all")
+# get the metadata out as separate object
+Par_TS.meta <- meta(Par_TS_rare)
+
+##### Phylogenetic diversity ####
+Par_TS_rare.asvtab <- as.data.frame(Par_TS_rare@otu_table)
+Par_TS_rare.tree <- Par_TS_rare@phy_tree
+
+#Phylogenetic diversity 
+Par_TS_rare.pd <- pd(t(Par_TS_rare.asvtab), Par_TS_rare.tree,include.root=T)
+
+## Add to the previous dataframe with diversity indices: Par_TS.div.df
+Par_TS.div$Phylogenetic_Diversity <- Par_TS_rare.pd$PD
+
+
+# Alpha diversity indices
+Par_BT_adiv <- rbind(
+  data.frame(
+    sample.id = Par_TS.meta$sample.id,
+    body.tissue = Par_TS.meta$body.tissue,
+    observed = as.numeric(Par_TS.div$observed),
+    shannon = as.numeric(Par_TS.div$diversity_shannon),
+    phylogenetic_diversity = as.numeric(Par_TS.div$Phylogenetic_Diversity)
+  )
+)
+
+shapiro.test(Par_BT_adiv$shannon) 
+shapiro.test(Par_BT_adiv$observed)
+shapiro.test(Par_BT_adiv$phylogenetic_diversity)
+
+# LMP
+perm_model_Shannon <- lmp(Par_BT_adiv$shannon ~ body.tissue, data = Par_BT_adiv, perm="Prob")
+anova(perm_model_Shannon)
+# Pairwise comparisons
+pairwise.perm.t.test(Par_BT_adiv$shannon, Par_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+perm_model_Observed <- lmp(Par_BT_adiv$observed ~ body.tissue, data = Par_BT_adiv, perm="Prob")
+anova(perm_model_Observed)
+# Pairwise comparisons
+pairwise.perm.t.test(Par_BT_adiv$observed, Par_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+
+perm_model_pd <- lmp(Par_BT_adiv$phylogenetic_diversity ~ body.tissue, data = Par_BT_adiv, perm="Prob")
+anova(perm_model_pd)
+# Pairwise comparisons
+pairwise.perm.t.test(Par_BT_adiv$phylogenetic_diversity, Par_BT_adiv$body.tissue, p.method = "fdr", nperm = 5000)
+
+Par_BT_adiv_melt <- reshape::melt(Par_BT_adiv)
+
+# Now use this data frame to plot 
+# color procrastination 
+# Extract the next 3 colors (e.g., colors 4 to 6 in the palette)
+my_colors <- wes_palette("Darjeeling1")[2:4]
+my_colors <- c( "#F2AD00","#F98400","#00A08A") 
+p2 <- ggboxplot(Par_BT_adiv_melt, x = "body.tissue", y = "value",
+              fill = "body.tissue", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = my_colors)
+p2
+```
+
+#2 Beta diversity
+
+```{r}
+
+Par_TS_rare 
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+Par_TS_rare.filtered <- core(Par_TS_rare, detection = 10, prevalence = 0.05)
+
+summarize_phyloseq(Par_TS_rare.filtered)
+summarize_phyloseq(Par_TS_rare)
+## the sparcity is reduced significantly from 0.87 to 0.77, but it won't change much in our results
+
+## Unweighted Unifrac #### 
+
+###Unweighted Unifrac is based on presence/absence of different taxa and abundance is not important. However, it is sensitive to the sequencing depth.
+
+## By using the filtered dataset (Par_TS_rare.filtered) the axis explained much higher proportion of the variation!!
+Par_TS_unwt.uni <- ordinate(Par_TS_rare.filtered, "PCoA", "unifrac", weighted=F)
+
+
+# check for Eigen values 
+barplot(Par_TS_unwt.uni$values$Relative_eig[1:10])
+
+# change order here to match the previous graph
+my_colors2 <- c("#00A08A","#F2AD00","#F98400") 
+Par_TS_unwt.uni.plot <- plot_ordination(Par_TS_rare.filtered, 
+                        Par_TS_unwt.uni, color="body.tissue") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(name = "body.tissue", 
+                                           values = my_colors2)
+print(Par_TS_unwt.uni.plot)
+
+### PERMANOVA 
+Par_TS.meta <- meta(Par_TS_rare)
+
+set.seed(1)
+Par_TS_uwt_unifrac.dist <- UniFrac(Par_TS_rare.filtered, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Par_TS_uwt_unifrac.dist_SIG <- adonis2(Par_TS_uwt_unifrac.dist ~ body.tissue, data = Par_TS.meta)
+
+## Pairwise permanova
+Par_TS_uwt_unifrac.dist_SIG_PW <- pairwise.adonis(Par_TS_uwt_unifrac.dist,Par_TS.meta$body.tissue,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Par_TS_uwt_unifrac.dist_SIG_DISP <- betadisper(Par_TS_uwt_unifrac.dist, Par_TS.meta$body.tissue)
+permutest(Par_TS_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Par_TS.rel)
+
+Par_TS.rel <- microbiome::transform(Par_TS_rare, "compositional")
+
+Par_TS_wt.uni <- ordinate(Par_TS.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(Par_TS_wt.uni$values$Eigenvalues[1:10])
+
+Par_TS_wt.uni.plot <- plot_ordination(Par_TS.rel, 
+                      Par_TS_wt.uni, color="body.tissue") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      theme_classic() + 
+                      scale_color_manual(name = "body.tissue", 
+                                           values = my_colors2)
+print(Par_TS_wt.uni.plot)
+
+### PERMANOVA 
+Par_TS.meta <- meta(Par_TS_rare)
+
+set.seed(1)
+Par_TS_wt_unifrac.dist <- UniFrac(Par_TS.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Par_TS_wt_unifrac.dist_SIG <- adonis2(Par_TS_wt_unifrac.dist ~ body.tissue, data = Par_TS.meta)
+
+
+## Pairwise permanova
+Par_TS_wt_unifrac.dist_SIG_PW <- pairwise.adonis(Par_TS_wt_unifrac.dist, Par_TS.meta$body.tissue,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Par_TS_wt_unifrac.dist_SIG_DISP <- betadisper(Par_TS_wt_unifrac.dist, Par_TS.meta$body.tissue)
+permutest(Par_TS_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+#3 Share core taxa between sample types of Paracentrotus 
+
+```{r}
+# convert to relative abundances
+Par_TS.rel <- microbiome::transform(Par_TS, "compositional")
+
+#Make a list of Sample types
+sample_types <- unique(as.character(meta(Par_TS.rel)$body.tissue))
+print(sample_types)
+
+list_core <- c() # an empty object to store information
+
+for (n in sample_types){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    ps.sub <- subset_samples(Par_TS.rel.f, body.tissue == n) # Choose sample from bosy.tissue by n
+    core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.0001, # 0.001 in atleast 60% samples 
+                           prevalence = 0.6)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each DiseaseState.
+    
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+
+# supplying colors in the order they appear in list_core
+mycols <- c(CELO="#F2AD00", CF="#F98400", CACA="#00A08A") 
+plot(venn(list_core),
+     fills = mycols)
+print(list_core)
+
+## to see the taxonomy of these ones 
+taxa_names(Par_TS.rel)[1:5]
+# format names
+Par_TS.rel.f <- format_to_besthit(Par_TS.rel)
+# check names
+taxa_names(Par_TS.rel.f)[1:5]
+### run the previous lopp with this new names : Par_TS_prune.rel.f
+```
+
+#4. Unique and share taxa 
+
+```{r}
+
+my_colors2 <- c( "#F2AD00", "#F98400", "#00A08A")  # CELO, CF, CACA
+
+# ------------------------
+# Taxonomic Analysis at the ASV level
+# ------------------------
+
+# Subset by tissue
+celo_asv <- subset_samples(Par_TS_rare, body.tissue == "CELO")
+cf_asv <- subset_samples(Par_TS_rare, body.tissue == "CF")
+caca_asv <- subset_samples(Par_TS_rare, body.tissue == "CACA")
+
+# Prune low counts
+celo_asv <- prune_taxa(taxa_sums(celo_asv) > 10, celo_asv)
+cf_asv <- prune_taxa(taxa_sums(cf_asv) > 10, cf_asv)
+caca_asv <- prune_taxa(taxa_sums(caca_asv) > 10, caca_asv)
+
+# Taxa names
+asv_celo <- taxa_names(celo_asv)
+asv_cf <- taxa_names(cf_asv)
+asv_caca <- taxa_names(caca_asv)
+
+# Unique and shared
+asv_shared <- Reduce(intersect, list(asv_celo, asv_cf, asv_caca))
+asv_unique_celo <- setdiff(asv_celo, union(asv_cf, asv_caca))
+asv_unique_cf <- setdiff(asv_cf, union(asv_celo, asv_caca))
+asv_unique_caca <- setdiff(asv_caca, union(asv_celo, asv_cf))
+
+# Taxonomy table
+tax_asv <- tax_table(Par_TS) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+
+
+# Save taxonomy tables
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_celo), "Unique_taxa/Tissue/unique_asv_CELO.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_cf), "Unique_taxa/Tissue/unique_asv_CF.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_unique_caca), "Unique_taxa/Tissue/unique_asv_CACA.csv", row.names = FALSE)
+write.csv(tax_asv %>% filter(Taxa_ID %in% asv_shared), "Unique_taxa/Tissue/shared_asv.csv", row.names = FALSE)
+
+# Venn diagram
+venn_data_asv <- list(CELO = asv_celo, CF = asv_cf, CACA = asv_caca)
+ggvenn(venn_data_asv, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/PARtissue//venn_diagram_asv.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the GENUS level
+# ------------------------
+ps_genus <- tax_glom(Par_TS, taxrank = "Genus")
+tax_genus <- tax_table(ps_genus) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+# Subset + prune
+celo_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CELO")) > 10, subset_samples(ps_genus, body.tissue == "CELO"))
+cf_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CF")) > 10, subset_samples(ps_genus, body.tissue == "CF"))
+caca_genus <- prune_taxa(taxa_sums(subset_samples(ps_genus, body.tissue == "CACA")) > 10, subset_samples(ps_genus, body.tissue == "CACA"))
+
+# Taxa names
+genus_celo <- taxa_names(celo_genus)
+genus_cf <- taxa_names(cf_genus)
+genus_caca <- taxa_names(caca_genus)
+
+# Unique/shared
+shared_genus <- Reduce(intersect, list(genus_celo, genus_cf, genus_caca))
+unique_genus_celo <- setdiff(genus_celo, union(genus_cf, genus_caca))
+unique_genus_cf <- setdiff(genus_cf, union(genus_celo, genus_caca))
+unique_genus_caca <- setdiff(genus_caca, union(genus_celo, genus_cf))
+
+# Save taxonomy tables???
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_celo), "Unique_taxa/PARtissue//unique_genus_CELO.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_cf), "Unique_taxa/PARtissue/unique_genus_CF.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% unique_genus_caca), "Unique_taxa/PARtissue/unique_genus_CACA.csv", row.names = FALSE)
+write.csv(tax_genus %>% filter(Taxa_ID %in% shared_genus), "Unique_taxa/Tissue/shared_genus.csv", row.names = FALSE)
+
+# Venn diagram
+venn_data_genus <- list(CELO = genus_celo, CF = genus_cf, CACA = genus_caca)
+ggvenn(venn_data_genus, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/PARtissue//venn_diagram_genus.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the FAMILY level
+# ------------------------
+
+ps_family <- tax_glom(Par_TS, taxrank = "Family")
+tax_family <- tax_table(ps_family) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+celo_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CELO")) > 10, subset_samples(ps_family, body.tissue == "CELO"))
+cf_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CF")) > 10, subset_samples(ps_family, body.tissue == "CF"))
+caca_family <- prune_taxa(taxa_sums(subset_samples(ps_family, body.tissue == "CACA")) > 10, subset_samples(ps_family, body.tissue == "CACA"))
+
+family_celo <- taxa_names(celo_family)
+family_cf <- taxa_names(cf_family)
+family_caca <- taxa_names(caca_family)
+
+shared_family <- Reduce(intersect, list(family_celo, family_cf, family_caca))
+unique_family_celo <- setdiff(family_celo, union(family_cf, family_caca))
+unique_family_cf <- setdiff(family_cf, union(family_celo, family_caca))
+unique_family_caca <- setdiff(family_caca, union(family_celo, family_cf))
+
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_celo), "Unique_taxa/PARtissue//unique_family_CELO.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_cf), "Unique_taxa/PARtissue/unique_family_CF.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% unique_family_caca), "Unique_taxa/PARtissue/unique_family_CACA.csv", row.names = FALSE)
+write.csv(tax_family %>% filter(Taxa_ID %in% shared_family), "Unique_taxa/PARtissue/shared_family.csv", row.names = FALSE)
+
+venn_data_family <- list(CELO = family_celo, CF = family_cf, CACA = family_caca)
+ggvenn(venn_data_family, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/PARtissue/venn_diagram_family.png", dpi = 300)
+
+# ------------------------
+# Taxonomic Analysis at the PHYLUM level
+# ------------------------
+
+ps_phylum <- tax_glom(Par_TS, taxrank = "Phylum")
+tax_phylum <- tax_table(ps_phylum) %>% as.data.frame() %>% rownames_to_column("Taxa_ID")
+
+celo_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CELO")) > 10, subset_samples(ps_phylum, body.tissue == "CELO"))
+cf_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CF")) > 10, subset_samples(ps_phylum, body.tissue == "CF"))
+caca_phy <- prune_taxa(taxa_sums(subset_samples(ps_phylum, body.tissue == "CACA")) > 10, subset_samples(ps_phylum, body.tissue == "CACA"))
+
+phy_celo <- taxa_names(celo_phy)
+phy_cf <- taxa_names(cf_phy)
+phy_caca <- taxa_names(caca_phy)
+
+shared_phy <- Reduce(intersect, list(phy_celo, phy_cf, phy_caca))
+unique_phy_celo <- setdiff(phy_celo, union(phy_cf, phy_caca))
+unique_phy_cf <- setdiff(phy_cf, union(phy_celo, phy_caca))
+unique_phy_caca <- setdiff(phy_caca, union(phy_celo, phy_cf))
+
+# Taxonomy table
+unique_celo_tax   <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_celo)
+unique_cf_tax     <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_cf)
+unique_caca_tax   <- tax_phylum %>% filter(Taxa_ID %in% unique_phy_caca)
+shared_genus_tax  <- tax_phylum %>% filter(Taxa_ID %in% shared_phy)
+
+
+venn_data_phylum <- list(CELO = phy_celo, CF = phy_cf, CACA = phy_caca)
+ggvenn(venn_data_phylum, fill_color = my_colors2, fill_alpha = 0.8, stroke_color = "black", stroke_size = 0.7, set_name_size = 8, text_size = 7)
+ggsave("Unique_taxa/PARtissue//venn_diagram_phylum.png", dpi = 300)
+```
+
+#5. Diferential abundance
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+# Let's perform this test at Genus level 
+Par_TS_genus <- phyloseq::tax_glom(Par_TS, taxrank = "Genus")
+Par_TS_fam <- phyloseq::tax_glom(Par_TS, taxrank = "Family")
+Par_TS_class <- phyloseq::tax_glom(Par_TS, taxrank = "Class")
+
+# Check which taxa have zero variance
+variance <- apply(otu_table(Par_TS_fam), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+
+# Remove taxa with zero variance from the phyloseq object
+Par_TS_fam_filtered <- prune_taxa(!taxa_names(Par_TS_fam) %in% taxa_to_remove, Par_TS_fam)
+
+# Perform ANCOM-BC analysis
+ancombc_results_Par_ST_fam <- ancombc2(
+  data = Par_TS_fam_filtered,
+  fix_formula = "body.tissue", # Grouping variable
+  p_adj_method = "BH",  # Adjust p-values for multiple comparisons
+  prv_cut = 0.1,      # Filter features with >90% zeros = prevl in >10% of the samples
+  lib_cut = 1000,       # Filter samples with low library sizes
+  group = "body.tissue",   # Specify grouping variable
+  struc_zero = TRUE,    # Identify structural zeros
+  neg_lb = TRUE,        # Negative lower bound test       
+)
+
+ancombc_results_Par_ST_res <-ancombc_results_Par_ST$res
+ancombc_results_Par_fam_ST_res <-ancombc_results_Par_ST_fam$res
+ancombc_results_Par_class_ST <-ancombc_results_Par_ST_class$res
+
+
+## Heatmap with the two comparisons
+# Extract the taxonomy table from the phyloseq object
+taxonomy_table <- as.data.frame(tax_table(Par_TS_fam_filtered))
+# Merge the taxonomic names with your data
+# Assuming you want to display genus names
+taxonomy_table$ASV <- rownames(taxonomy_table)  # Create a column for ASV names
+# Merge the taxonomy data with the differential abundance results
+ancombc_results_Par_fam_ST_res$TaxonName <- taxonomy_table$Family[match(ancombc_results_Par_fam_ST_res$taxon, taxonomy_table$ASV)]  # Adjust column name if needed
+
+# Write csv with ANCOM-BC results 
+write.csv(ancombc_results_Par_ST_res, "ANCOM-BCresults/ANCOMBC_results_Par_ST.csv")
+write.csv(ancombc_results_Par_fam_ST_res, "ANCOM-BCresults/ANCOMBC_results_fam_Par_ST.csv")
+write.csv(ancombc_results_Par_class_ST, "ANCOM-BCresults/ANCOMBC_results_class_Par_ST.csv")
+
+# Step 1: Prepare data for plotting
+df_fig_ancombc_Par_TS <- ancombc_results_Par_fam_ST_res %>%
+  dplyr::select(taxon, TaxonName, lfc_body.tissueCELO, lfc_body.tissueCF, q_body.tissueCELO, q_body.tissueCF) %>%
+  pivot_longer(cols = starts_with("lfc_"), names_to = "group", values_to = "value") %>%
+  mutate(
+    significance = case_when(
+      group == "lfc_body.tissueCELO" & q_body.tissueCELO < 0.05 ~ "*",
+      group == "lfc_body.tissueCF" & q_body.tissueCF < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# Step 2: Select top 15 most differentially abundant families (by absolute LFC)
+# Create a ranked table of max absolute LFC per taxon
+top_taxa <- df_fig_ancombc_Par_TS %>%
+  mutate(abs_lfc = abs(value)) %>%
+  arrange(desc(abs_lfc)) %>%
+  distinct(TaxonName, .keep_all = TRUE) %>%
+  slice_head(n = 15) %>%
+  pull(TaxonName)
+
+df_fig_ancombc_Par_TS <- df_fig_ancombc_Par_TS %>%
+  filter(TaxonName %in% top_taxa)
+
+# Optional: reorder TaxonName factor for nice vertical layout
+df_fig_ancombc_Par_TS$TaxonName <- factor(df_fig_ancombc_Par_TS$TaxonName, 
+                                          levels = rev(unique(df_fig_ancombc_Par_TS$TaxonName)))
+
+# Step 3: Create the heatmap plot with fixed color limits
+p_ancombc_Par_ST <- ggplot(df_fig_ancombc_Par_TS, aes(x = group, y = TaxonName, fill = value)) + 
+  geom_tile(color = "black") +  
+  scale_fill_gradient2(
+    low = "#00A08A", 
+    high = "orange", 
+    mid = "white", 
+    midpoint = 0, 
+    limit = c(-4, 4),    
+    name = "Log Fold Change", 
+    na.value = "white"
+  ) +
+  geom_text(aes(label = significance), color = "black", size = 8) +  # Asterisks for significance
+  scale_x_discrete(labels = c(
+    "lfc_body.tissueCELO" = "CELO vs. Feces", 
+    "lfc_body.tissueCF" = "CF vs. Feces"
+  )) +  
+  labs(
+    x = NULL, 
+    y = NULL, 
+    title = "Top 15 Differentially Abundant Families in Arbacia (ANCOM-BC)"
+  ) +  
+  theme_minimal() +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_text(size = 11)
+  )
+
+p_ancombc_Par_ST
+
+```
+
+# LOCATION
+
+## Taxa bar plots both species
+
+```{r}
+# Subset samples from the location
+ps_LOC <- subset_samples(phylo, body.tissue=="CF" & place!="VENT" & enfermo!="SI")
+sample_data(ps_LOC)
+ps_LOC <- prune_samples(!(sample_names(ps_LOC) %in% c("PC2CF","PC9CF","PC6CF")), ps_LOC)
+
+table(
+  location = sample_data(ps_LOC)$place,
+  species = sample_data(ps_LOC)$species)
+
+# remove the same that are removed by rarefaction
+ps_LOC <- prune_samples(!(sample_names(ps_LOC) %in% c("AB10CF","AB8CF","AB9CF", "AC10CF", "AC4CF", "AC8CF")), ps_LOC)
+
+
+# Rarefy 19900reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+ps_LOC_rare <- rarefy_even_depth(ps_LOC, sample.size = 3000)
+
+table(
+  location = sample_data(ps_LOC_rare)$place,
+  species = sample_data(ps_LOC_rare)$species)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(ps_LOC_rare, "Phylum")
+```
+
+```{r}
+# merge all taxa that are detected rare
+ps_LOC.fam <- aggregate_rare(ps_LOC, level="Family", detection = 0.25, prevalence = 0.75)
+
+ps_LOC.phy <- aggregate_rare(ps_LOC, level="Phylum", detection = 0.01, prevalence = 0.5)
+
+#Plot family
+
+# Count families
+n_families <- length(unique(tax_table(ps_LOC.fam)[, "Family"]))
+# Generate a long palette
+custom_palette <- colorRampPalette(brewer.pal(12, "Paired"))(n_families)
+
+# Count phyla
+n_phyla <- length(unique(tax_table(ps_LOC.phy)[, "Phylum"]))
+# Generate a long palette
+custom_palette2 <- colorRampPalette(brewer.pal(12, "Paired"))(n_phyla)
+
+
+### Total counts
+p.fam <- plot_composition(ps_LOC.fam, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p.fam
+
+### Relative abundances
+pseq_LOC.famrel <- microbiome::transform(ps_LOC.fam, "compositional")
+
+p_LOC.fam.rel <- plot_composition(pseq_LOC.famrel, sample.sort = "orden",
+                          otu.sort = NULL,
+                          plot.type = "barplot",
+                          verbose = FALSE) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        # Show sample names
+        axis.ticks.x = element_line()) + 
+  scale_fill_manual("Family", values = custom_palette)
+p_LOC.fam.rel
+
+### Group by Location and species
+
+# plot relative abundances group by locations and speices
+p_LOC.fam.rel <- plot_composition(pseq_LOC.famrel, 
+                                  average_by = "group_LOC") +
+        guides(fill = guide_legend(ncol = 1)) + 
+        labs(x = "Samples", 
+            y = "Relative abundance",
+        title = "Relative abundance data", 
+        subtitle = "Average by location and species") +
+  scale_fill_manual("Family", values = custom_palette)
+p_LOC.fam.rel
+
+# Extract data to report 
+data_famrel_LOC <- psmelt(pseq_LOC.famrel)
+data_famrel_LOC$group_LOC <- as.factor(data_famrel_LOC$group_LOC)
+# Calculate average relative abundance
+relative_abundance_fam <- aggregate(
+  Abundance ~ group_LOC + Family,
+  data = data_famrel_LOC,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_fam$RelativeAbundance <- relative_abundance_fam$Abundance * 100
+
+## Group by location and species at phyla level
+pseq_LOC.phyrel <- microbiome::transform(ps_LOC.phy, "compositional")
+
+p_LOC.phy.rel <- plot_composition(pseq_LOC.phyrel, 
+                                  average_by = "group_LOC") +
+        guides(fill = guide_legend(ncol = 1)) + 
+        labs(x = "Samples", 
+            y = "Relative abundance",
+        title = "Relative abundance data", 
+        subtitle = "Average by location and species") +
+  scale_fill_manual("Phylum", values = custom_palette2)
+p_LOC.phy.rel
+
+# Extract data to report 
+data_phyrel_LOC <- psmelt(pseq_LOC.phyrel)
+data_phyrel_LOC$group_LOC <- as.factor(data_phyrel_LOC$group_LOC)
+# Calculate average relative abundance
+relative_abundance_phy <- aggregate(
+  Abundance ~ group_LOC + Phylum,
+  data = data_phyrel_LOC,
+  FUN = mean # Use mean instead of sum
+)
+# Convert to percentages
+relative_abundance_phy$RelativeAbundance <- round(relative_abundance_phy$Abundance * 100, 2)
+
+```
+
+## Together SPECIES&LOC
+
+#1 Alpha diversity
+```{r}
+ps_LOC_rare
+
+##### Non-phylogenetic diversity ####
+LOC.div <- alpha(ps_LOC_rare, index = "all")
+
+##### Phylogenetic diversity ####
+ps_LOC_rare.asvtab <- as.data.frame(ps_LOC_rare@otu_table)
+LOC_rare.tree <- ps_SP_rare@phy_tree
+LOC_rare.tree <- midpoint.root(LOC_rare.tree)
+
+ps_SP_rare.pd <- pd(t(ps_LOC_rare.asvtab), LOC_rare.tree, include.root=T)
+
+## Add to the previous dataframe with diversity indices
+LOC.div$Phylogenetic_Diversity <- ps_SP_rare.pd$PD
+
+# Metadata
+LOC.meta <- meta(ps_LOC_rare) 
+
+# Alpha diversity indices
+LOC_adiv <- rbind(
+  data.frame(
+    sample.id = LOC.meta$sample.id,
+    location = LOC.meta$place,
+    species = LOC.meta$species,
+    group_LOC = LOC.meta$group_LOC,
+    observed = LOC.div$observed,
+    shannon = LOC.div$diversity_shannon,
+    phylogenetic_diversity = LOC.div$Phylogenetic_Diversity
+  )
+)
+
+# Test for normality
+shapiro.test(LOC.div$diversity_shannon) 
+shapiro.test(LOC.div$observed)
+shapiro.test(LOC.div$Phylogenetic_Diversity)
+
+## PERMANOVA
+perm_model_Shannon <- lmp(LOC_adiv$shannon ~ species / location, data = LOC_adiv, perm=999)
+summary(perm_model_Shannon)
+
+perm_model_observed <- lmp(LOC_adiv$observed ~ species / location, data = LOC_adiv, perm=999)
+summary(perm_model_observed)
+
+perm_model_PD <- lmp(LOC_adiv$phylogenetic_diversity ~ species / location, data = LOC_adiv, perm="Prob")
+summary(perm_model_PD)
+
+
+## Another way to 
+
+LOC_adiv_melt <- reshape2::melt(LOC_adiv)
+mycols_grouploc <- c("#E49BAA","#6C2F3D","#D4E9A0","#8FA64A") 
+
+# Now use this data frame to plot 
+p2 <- ggboxplot(LOC_adiv_melt, x = "group_LOC", y = "value",
+              fill = "group_LOC", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = mycols_grouploc)
+p2
+```
+
+#2 Beta diversity
+
+```{r}
+
+summarize_phyloseq(ps_LOC_rare)
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+ps_LOC_rare.filtered <- core(ps_LOC_rare, detection = 10, prevalence = 0.05)
+summarize_phyloseq(ps_LOC_rare.filtered)
+
+## the sparcity is reduced significantly from 0.89 to 0.66
+
+## Unweighted Unifrac #### 
+
+## By using the filtered dataset (Par_TS_rare.filtered) the axis explained much higher proportion of the variation!! But the ordination plot doesn't show clearly both locations
+
+LOC_unwt.uni <- ordinate(ps_LOC_rare.filtered, "PCoA", "unifrac", weighted=F)
+# check for Eigen values 
+barplot(LOC_unwt.uni$values$Relative_eig[1:10])
+
+LOC_unwt.uni.plot <- plot_ordination(ps_LOC_rare.filtered, 
+                        LOC_unwt.uni, color="group_LOC") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(values = mycols_grouploc)
+print(LOC_unwt.uni.plot)
+
+### PERMANOVA 
+LOC.meta <- meta(ps_LOC_rare.filtered)
+
+set.seed(1)
+LOC_uwt_unifrac.dist <- UniFrac(ps_LOC_rare.filtered, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+LOC_uwt_unifrac.dist_SIG <- adonis2(LOC_uwt_unifrac.dist ~ species / place, data = LOC.meta, by="terms")
+
+## Pairwise permanova
+LOC_uwt_unifrac.dist_SIG_PW <- pairwise.adonis(LOC_uwt_unifrac.dist, LOC.meta$place, p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+LOC_uwt_unifrac.dist_SIG_DISP <- betadisper(LOC_uwt_unifrac.dist, LOC.meta$group_LOC)
+permutest(LOC_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Par_TS.rel)
+LOC.rel <- microbiome::transform(ps_LOC_rare.filtered, "compositional")
+
+LOC_wt.uni <- ordinate(LOC.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(LOC_wt.uni$values$Eigenvalues[1:10])
+
+LOC_wt.uni.plot <- plot_ordination(LOC.rel, 
+                      LOC_wt.uni, color="group_LOC") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      theme_classic() + 
+                      scale_color_manual(values = mycols_grouploc)
+print(LOC_wt.uni.plot)
+
+### PERMANOVA 
+LOC.meta <- meta(LOC.rel)
+
+set.seed(1)
+LOC_wt_unifrac.dist <- UniFrac(LOC.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+LOC_wt_unifrac.dist_SIG <- adonis2(LOC_wt_unifrac.dist ~ species / place, data = LOC.meta, by="terms")
+
+## Checking Homogenity of Variance 
+LOC_wt_unifrac.dist_SIG_DISP <- betadisper(LOC_wt_unifrac.dist, LOC.meta$group_LOC)
+permutest(LOC_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+## Arbacia 
+
+```{r}
+# Subset samples Arbacia Location
+Arb_LOC <- subset_samples(ps_LOC, species=="ARBACIA")
+
+# Rarefy 8600reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+Arb_LOC_rare <- rarefy_even_depth(Arb_LOC, sample.size = 3000)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(Arb_LOC_rare, "Phylum")
+```
+
+#1 Alpha diversity
+```{r}
+
+##### Non-phylogenetic diversity ####
+Arb_LOC.div <- alpha(Arb_LOC_rare, index = "all")
+
+##### Phylogenetic diversity ####
+
+Arb_LOC_rare.asvtab <- as.data.frame(Arb_LOC_rare@otu_table)
+Arb_LOC_rare.tree <- Arb_LOC_rare@phy_tree
+
+#Phylogenetic diversity 
+Arb_LOC_rare.pd <- pd(t(Arb_LOC_rare.asvtab), Arb_LOC_rare.tree,include.root=T)
+
+## Add to the previous dataframe with diversity indices: Arb_LOC.div.df
+Arb_LOC.div$Phylogenetic_Diversity <- Arb_LOC_rare.pd$PD
+
+### One-way to plot the data
+# get the metadata out as separate object
+Arb_LOC.meta <- meta(Arb_LOC_rare)
+# Add the rownames as a new colum for easy integration later.
+Arb_LOC.meta$sam_name <- rownames(Arb_LOC.meta)
+# Add the rownames to diversity table
+Arb_LOC.div$sam_name <- rownames(Arb_LOC.div)
+# merge these two data frames into one
+Arb_LOC.div.df <- merge(Arb_LOC.div,Arb_LOC.meta, by = "sam_name")
+# check the tables
+colnames(Arb_LOC.div.df)
+
+
+## Another way to plot
+
+# convert phyloseq object into a long data format.
+Arb_LOC.div.df2 <- Arb_LOC.div.df[, c("place", "diversity_shannon", "observed", "Phylogenetic_Diversity")]
+# the names are not pretty. we can replace them
+colnames(Arb_LOC.div.df2) <- c("Location", "Shannon", "Observed_ASVs", "Phylogenetic_diversity")
+# check
+colnames(Arb_LOC.div.df2)
+Arb_LOC.div.df2_melt <- reshape2::melt(Arb_LOC.div.df2)
+
+head(Arb_LOC.div.df2_melt)
+
+# Now use this data frame to plot 
+# Extract the next 3 colors (e.g., colors 4 to 6 in the palette)
+my_colors_loc <- wes_palette("GrandBudapest1")[2:3]
+p2 <- ggboxplot(Arb_LOC.div.df2_melt, x = "Location", y = "value",
+              fill = "Location", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = my_colors_loc)
+p2
+
+# Statitical comparisons 
+
+#1. Overal stats
+
+as.factor(Arb_LOC.div.df2$Location)
+# Overall Kruskal-Wallis test
+## Shannon index ##
+Arb_LOC.div.KW_Shannon <- Arb_LOC.div.df2 %>%
+  kruskal_test(Shannon ~ Arb_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+levels(as.factor(Arb_LOC.div.df2$Location))
+Arb_LOC.div.KW_Shannon_pw <- Arb_LOC.div.df2 %>%
+    pairwise_wilcox_test(Shannon ~ Location, p.adjust.method = "BH")
+
+## Observed ASVs ## 
+Arb_LOC.div.KW_Obs <- Arb_LOC.div.df2 %>%
+  kruskal_test(Observed_ASVs ~ Arb_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+Arb_LOC.div.KW_Obs_pw <- Arb_LOC.div.df2 %>%
+      pairwise_wilcox_test(Observed_ASVs ~ Location, p.adjust.method = "BH") 
+
+## Phylogenetic diversity (Faith_pd) ## 
+Arb_LOC.div.KW_Pd <- Arb_LOC.div.df2 %>%
+  kruskal_test(Phylogenetic_diversity ~ Arb_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+Arb_LOC.div.KW_pd_pw <- Arb_LOC.div.df2 %>%
+      pairwise_wilcox_test(Phylogenetic_diversity ~ Location, p.adjust.method = "BH") 
+
+combined_Arb_LOC.div_pw <- bind_rows(Arb_LOC.div.KW_Shannon_pw, Arb_LOC.div.KW_Obs_pw, Arb_LOC.div.KW_pd_pw)
+# no significant 
+
+```
+
+#2 Beta diversity
+
+```{r}
+
+summarize_phyloseq(Arb_LOC_rare)
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+Arb_LOC_rare.filtered <- core(Arb_LOC_rare, detection = 10, prevalence = 0.05)
+summarize_phyloseq(Arb_LOC_rare.filtered)
+
+## the sparcity is reduced significantly from 0.84 to 0.76
+
+## Unweighted Unifrac #### 
+
+## By using the filtered dataset (Par_TS_rare.filtered) the axis explained much higher proportion of the variation!! But the ordination plot doesn't show clearly both locations
+
+Arb_LOC_unwt.uni <- ordinate(Arb_LOC_rare, "PCoA", "unifrac", weighted=F)
+# check for Eigen values 
+barplot(Arb_LOC_unwt.uni$values$Relative_eig[1:10])
+
+Arb_LOC_unwt.uni.plot <- plot_ordination(Arb_LOC_rare, 
+                        Arb_LOC_unwt.uni, color="place") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(name = "place", 
+                                           values = my_colors_loc)
+print(Arb_LOC_unwt.uni.plot)
+
+### PERMANOVA 
+Arb_LOC.meta <- meta(Arb_LOC_rare)
+
+set.seed(1)
+Arb_LOC_uwt_unifrac.dist <- UniFrac(Arb_LOC_rare, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Arb_LOC_uwt_unifrac.dist_SIG <- adonis2(Arb_LOC_uwt_unifrac.dist ~ place, data = Arb_LOC.meta)
+
+## Pairwise permanova
+Arb_LOC_uwt_unifrac.dist_SIG_PW <- pairwise.adonis(Arb_LOC_uwt_unifrac.dist,Arb_LOC.meta$place,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Arb_LOC_uwt_unifrac.dist_SIG_DISP <- betadisper(Arb_LOC_uwt_unifrac.dist, Arb_LOC.meta$place)
+permutest(Arb_LOC_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Par_TS.rel)
+
+Arb_LOC.rel <- microbiome::transform(Arb_LOC_rare, "compositional")
+
+Arb_LOC_wt.uni <- ordinate(Arb_LOC.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(Arb_LOC_wt.uni$values$Eigenvalues[1:10])
+
+Arb_LOC_wt.uni.plot <- plot_ordination(Arb_LOC.rel, 
+                      Arb_LOC_wt.uni, color="place") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      theme_classic() + 
+                      scale_color_manual(name = "place", 
+                                           values = my_colors_loc)
+print(Arb_LOC_wt.uni.plot)
+
+### PERMANOVA 
+Arb_LOC.meta <- meta(Arb_LOC_rare)
+
+set.seed(1)
+Arb_LOC_wt_unifrac.dist <- UniFrac(Arb_LOC.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Arb_LOC_wt_unifrac.dist_SIG <- adonis2(Arb_LOC_wt_unifrac.dist ~ place, data = Arb_LOC.meta)
+
+
+## Checking Homogenity of Variance 
+Arb_LOC_wt_unifrac.dist_SIG_DISP <- betadisper(Arb_LOC_wt_unifrac.dist, Arb_LOC.meta$place)
+permutest(Arb_LOC_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+
+#3 Share core taxa between sample types of Arbacia 
+
+```{r}
+# convert to relative abundances
+Arb_LOC.rel <- microbiome::transform(Arb_LOC, "compositional")
+
+#Make a list of Sample types
+Location <- unique(as.character(meta(Arb_LOC.rel)$place))
+print(Location)
+
+list_core <- c() # an empty object to store information
+
+for (n in Location){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    ps.sub <- subset_samples(Arb_LOC.rel.f, place == n) # Choose sample from each place by n
+    core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.0001, # 0.001 in atleast 60% samples 
+                           prevalence = 0.6)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each DiseaseState.
+    
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+my_colors_loc
+# supplying colors in the order they appear in list_core
+mycols_loc <- c(BLANES="#FD6467", CONTROL="#5B1A18") 
+plot(venn(list_core),
+     fills = mycols_loc)
+
+print(list_core)
+
+## to see the taxonomy of these ones 
+taxa_names(Arb_LOC.rel)[1:5]
+# format names
+Arb_LOC.rel.f <- format_to_besthit(Arb_LOC.rel)
+# check names
+taxa_names(Arb_LOC.rel.f)[1:5]
+### run the previous lopp with this new names : Arb_LOC_prune.rel.f
+```
+
+#4. Unique and share taxa between locations
+```{r}
+# ------------------------
+# Taxonomic Analysis at the ASV level
+# ------------------------
+# Subset by species
+blanes_asv <- subset_samples(Arb_LOC_rare, place == "BLANES")
+palma_asv <- subset_samples(Arb_LOC_rare, place == "CONTROL")
+
+# Prune zero taxa
+blanes_asv <- prune_taxa(taxa_sums(blanes_asv) > 10, blanes_asv)
+palma_asv <- prune_taxa(taxa_sums(palma_asv) > 10, palma_asv)
+
+# Extract asv names
+blanes_asvnames <- taxa_names(blanes_asv)
+palma_asvnames <- taxa_names(palma_asv)
+
+# Find unique and shared genera
+unique_asv_blanes <- setdiff(blanes_asvnames, palma_asv_asvnames)
+unique_asv_palma <- setdiff(palma_asv_asvnames, blanes_asvnames)
+shared_asv <- intersect(blanes_asvnames, palma_asv_asvnames)
+
+# ------------------------
+# Taxonomic Analysis at the GENUS level
+# ------------------------
+loc_genus <- tax_glom(Arb_LOC_rare, taxrank = "Genus")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_genus) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_genus <- subset_samples(loc_genus, place == "BLANES")
+palma_genus <- subset_samples(loc_genus, place == "CONTROL")
+
+# Prune zero taxa
+blanes_genus <- prune_taxa(taxa_sums(blanes_genus) > 10, blanes_genus)
+palma_genus <- prune_taxa(taxa_sums(palma_genus) > 10, palma_genus)
+
+# Extract genus names
+blanes_genusnames <- taxa_names(blanes_genus)
+palma_genusnames <- taxa_names(palma_genus)
+
+# Find unique and shared genera
+unique_genus_blanes <- setdiff(blanes_genusnames, palma_genusnames)
+unique_genus_palma <- setdiff(palma_genusnames, blanes_genusnames)
+shared_genus <- intersect(blanes_genusnames, palma_genusnames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genus_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genus_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_genus)
+
+write.csv(unique_blanes_tax, "Unique_taxa/ARBloc//unique_PARblanes_genus_taxonomy.csv", row.names = FALSE)
+  write.csv(unique_palma_tax, "Unique_taxa/ARBloc/unique_PARpalma_genus_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "Unique_taxa/ARBloc//shared_PARloc_genus_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the FAMILY level
+# ------------------------
+loc_family <- tax_glom(Arb_LOC_rare, taxrank = "Family")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_family) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_family <- subset_samples(loc_family, place == "BLANES")
+palma_family <- subset_samples(loc_family, place == "CONTROL")
+
+# Prune zero taxa
+blanes_family <- prune_taxa(taxa_sums(blanes_family) > 10, blanes_family)
+palma_family <- prune_taxa(taxa_sums(palma_family) > 10, palma_family)
+
+# Extract family names
+blanes_familynames <- taxa_names(blanes_family)
+palma_familynames <- taxa_names(palma_family)
+
+# Find unique and shared genera
+unique_family_blanes <- setdiff(blanes_familynames, palma_familynames)
+unique_family_palma <- setdiff(palma_familynames, blanes_familynames)
+shared_family <- intersect(blanes_familynames, palma_familynames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_family_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_family_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_family)
+
+write.csv(unique_blanes_tax, "Unique_taxa/ARBloc/unique_PARblanes_family_taxonomy.csv", row.names = FALSE)
+write.csv(unique_palma_tax, "Unique_taxa/ARBloc/unique_PARpalma_family_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "Unique_taxa/ARBloc/shared_PARloc_family_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the PHYLUM level
+# ------------------------
+loc_phylum <- tax_glom(Arb_LOC, taxrank = "Phylum")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_phylum) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_phy <- subset_samples(loc_phylum, place == "BLANES")
+palma_phy <- subset_samples(loc_phylum, place == "CONTROL")
+
+# Prune zero taxa
+blanes_phy <- prune_taxa(taxa_sums(blanes_phy) > 0, blanes_phy)
+palma_phy <- prune_taxa(taxa_sums(palma_phy) > 0, palma_phy)
+
+# Extract phy names
+blanes_phynames <- taxa_names(blanes_phy)
+palma_phynames <- taxa_names(palma_phy)
+
+# Find unique and shared genera
+unique_phy_blanes <- setdiff(blanes_phynames, palma_phynames)
+unique_phy_palma <- setdiff(palma_phynames, blanes_phynames)
+shared_phy <- intersect(blanes_phynames, palma_phynames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_phy)
+
+# ------------------------
+# Generate Venn Diagrams for Genera & Families
+# ------------------------
+
+venn_data_asv <- list(
+  "Blanes" = blanes_asvnames,
+  "Palma" = palma_asvnames
+)
+
+venn_data_genus <- list(
+  "Blanes" = blanes_genusnames,
+  "Palma" = palma_genusnames
+)
+
+venn_data_family <- list(
+  "Blanes" = blanes_familynames,
+  "Palma" = palma_familynames
+)
+
+
+# ASV-level Venn Diagram
+ggvenn(venn_data_asv, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/ARBloc/venn_diagram_asv.png", dpi = 300)
+
+# Genus-level Venn Diagram
+ggvenn(venn_data_genus, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/ARBloc/venn_diagram_genus.png", dpi = 300)
+
+# Family-level Venn Diagram
+ggvenn(venn_data_family, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/ARBloc/venn_diagram_family.png", dpi = 300)
+```
+
+#5. Diferential abundance
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+# Let's perform this test at Genus level 
+ps_Arb_LOC_genus <- phyloseq::tax_glom(Arb_LOC, taxrank = "Genus")
+ps_Arb_LOC_fam <- phyloseq::tax_glom(Arb_LOC, taxrank = "Family")
+ps_Arb_LOC_phy <- phyloseq::tax_glom(Arb_LOC, taxrank = "Phylum")
+
+# Check which taxa have zero variance
+variance <- apply(otu_table(ps_Arb_LOC_fam), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+
+# Remove taxa with zero variance from the phyloseq object
+filtered_Arb_LOC_fam <- prune_taxa(!taxa_names(ps_Arb_LOC_fam) %in% taxa_to_remove, ps_Arb_LOC_fam)
+
+# Manually remove the Genus taxa causing issues
+taxa_to_remove2 <- c("ASV376", "ASV427", "ASV487", "ASV2004", "ASV2928", "ASV8862")
+taxa_to_remove3 <- c("ASV351", "ASV398", "ASV456", "ASV1843", "ASV2725", "ASV3162", "ASV8175")
+
+## family 
+taxa_to_remove4 <- c("ASV1843", "ASV3162", "ASV3656")
+# Remove these taxa from the phyloseq object
+filtered_Arb_LOC_fam <- prune_taxa(!taxa_names(filtered_Arb_LOC_fam) %in% taxa_to_remove4, filtered_Arb_LOC_fam)
+
+# Perform ANCOM-BC analysis
+ancombc_Arb_LOC_phy <- ancombc2(
+  data = filtered_Arb_LOC_fam,
+  fix_formula = "place", # Grouping variable
+  p_adj_method = "BH",  # Adjust p-values for multiple comparisons
+  prv_cut = 0.3,      # Filter features with >90% zeros = prevl in >10% of the samples
+  lib_cut = 1000,       # Filter samples with low library sizes
+  group = "place",   # Specify grouping variable
+  struc_zero = TRUE,    # Identify structural zeros
+  neg_lb = TRUE,        # Negative lower bound test       
+)
+
+ancombc_results_Arb_LOC <-ancombc_Arb_LOC$res
+ancombc_results_Arb_LOC_fam <-ancombc_Arb_LOC_fam$res
+ancombc_results_Arb_LOC_phy <-ancombc_Arb_LOC_phy$res
+
+# Extract the taxonomy table from the phyloseq object
+taxonomy_table <- as.data.frame(tax_table(filtered_Arb_LOC_fam))
+# Merge the taxonomic names with your data
+# Assuming you want to display genus names
+taxonomy_table$ASV <- rownames(taxonomy_table)  # Create a column for ASV names
+# Merge the taxonomy data with the differential abundance results
+ancombc_results_Arb_LOC_fam$TaxonName <- taxonomy_table$Family[match(ancombc_results_Arb_LOC_fam$taxon, taxonomy_table$ASV)]  # Adjust column name if needed
+
+# Write csv with ANCOM-BC results 
+write.csv(ancombc_results_Arb_LOC, "ANCOM-BCresults/ANCOMBC_results_Arb_LOC.csv")
+write.csv(ancombc_results_Arb_LOC_fam, "ANCOM-BCresults/ANCOMBC_results_Arb_LOC_fam.csv")
+write.csv(ancombc_results_Arb_LOC_phy, "ANCOM-BCresults/ANCOMBC_results_Arb_LOC_phy.csv")
+
+# Extract relevant data for "speciesPARACENT"
+data <- data.frame(
+  Taxon = ancombc_results_Arb_LOC_fam$taxon,  # Taxon names (e.g., ASVs)
+  LogFoldChange = ancombc_results_Arb_LOC_fam$lfc_placeCONTROL,  # Log fold change for speciesPARACENT
+  AdjPVal = ancombc_results_Arb_LOC_fam$q_placeCONTROL,# Adjusted p-value for speciesPARACENT
+  TaxonName = ancombc_results_Arb_LOC_fam$TaxonName  # Taxonomic names (e.g., Genus, Family, etc.)
+)
+
+# Filter for significant results based on adjusted p-value
+data$Significant <- data$AdjPVal < 1  # You can adjust this threshold if needed
+data_significant <- data[data$Significant == TRUE, ]  # Only significant results
+
+# Sort by LogFoldChange for better visualization
+data_significant <- data_significant[order(data_significant$LogFoldChange), ]
+
+# Create a waterfall plot
+diff_abundance_plot_Arb_LOC_fam <- ggplot(data_significant, aes(x = reorder(TaxonName, LogFoldChange), y = LogFoldChange, fill = LogFoldChange)) +
+  geom_bar(stat = "identity", width = 0.7) +  # Bar plot for LogFoldChange
+  coord_flip() +  # Flip coordinates to make it horizontal
+  scale_fill_gradient2(low = "#FD6467", mid = "white", high = "#5B1A18", midpoint = 0, 
+                       name = "Abundance Direction") +  
+  labs(
+    title = "Differential Abundance Waterfall Plot",
+    x = "Genus",
+    y = "Log-Fold Change"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 14)
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black")  # Add a horizontal zero line
+```
+
+
+## Paracentrotus 
+
+```{r}
+# Subset samples Arbacia Location
+Par_LOC <- subset_samples(ps_LOC, species=="PARACENT")
+
+# Rarefy 47700 reads 
+set.seed(9242)  # This will help in reproducing the filtering and nomalisation. 
+Par_LOC_rare <- rarefy_even_depth(Par_LOC, sample.size = 47700)
+
+#Quick taxa prevalence check
+plot_taxa_prevalence(Par_LOC_rare, "Phylum")
+```
+
+#1 Alpha diversity
+```{r}
+
+##### Non-phylogenetic diversity ####
+Par_LOC.div <- alpha(Par_LOC_rare, index = "all")
+
+##### Phylogenetic diversity ####
+
+Par_LOC_rare.asvtab <- as.data.frame(Par_LOC_rare@otu_table)
+Par_LOC_rare.tree <- Par_LOC_rare@phy_tree
+
+Par_LOC_rare.pd <- pd(t(Par_LOC_rare.asvtab), Par_LOC_rare.tree, include.root=F)
+
+
+## Add to the previous dataframe with diversity indices: Par_LOC.div.df
+Par_LOC.div$Phylogenetic_Diversity <- Par_LOC_rare.pd$PD
+
+# get the metadata out as separate object
+Par_LOC.meta <- meta(Par_LOC_rare)
+# Add the rownames as a new colum for easy integration later.
+Par_LOC.meta$sam_name <- rownames(Par_LOC.meta)
+# Add the rownames to diversity table
+Par_LOC.div$sam_name <- rownames(Par_LOC.div)
+# merge these two data frames into one
+Par_LOC.div.df <- merge(Par_LOC.div,Par_LOC.meta, by = "sam_name")
+# check the tables
+colnames(Par_LOC.div.df)
+# convert phyloseq object into a long data format.
+Par_LOC.div.df2 <- Par_LOC.div.df[, c("place", "diversity_shannon", "observed", "Phylogenetic_Diversity")]
+# the names are not pretty. we can replace them
+colnames(Par_LOC.div.df2) <- c("Location", "Shannon", "Observed_ASVs", "Phylogenetic_diversity")
+# check
+colnames(Par_LOC.div.df2)
+Par_LOC.div.df2_melt <- reshape2::melt(Par_LOC.div.df2)
+
+head(Par_LOC.div.df2_melt)
+
+# Now use this data frame to plot 
+# color procrastination 
+# Extract the next 3 colors (e.g., colors 4 to 6 in the palette WesAnderson)
+my_colors_loc <- wes_palette("GrandBudapest1")[2:3]
+p2 <- ggboxplot(Par_LOC.div.df2_melt, x = "Location", y = "value",
+              fill = "Location", 
+              legend= "right",
+              facet.by = "variable", 
+              scales = "free") + 
+              rremove("x.text") +
+              scale_fill_manual(values = my_colors_loc)
+p2
+
+# Statitical comparisons 
+
+#1. Overal stats
+as.factor(Par_LOC.div.df2$Location)
+# Overall Kruskal-Wallis test
+
+## Shannon index ##
+Par_LOC.div.KW_Shannon <- Par_LOC.div.df2 %>%
+  kruskal_test(Shannon ~ Par_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+levels(as.factor(Par_LOC.div.df2$Location))
+Par_LOC.div.KW_Shannon_pw <- Par_LOC.div.df2 %>%
+    pairwise_wilcox_test(Shannon ~ Location, p.adjust.method = "BH")
+
+## Observed ASVs ## 
+Par_LOC.div.KW_Obs <- Par_LOC.div.df2 %>%
+  kruskal_test(Observed_ASVs ~ Par_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+Par_LOC.div.KW_Obs_pw <- Par_LOC.div.df2 %>%
+      pairwise_wilcox_test(Observed_ASVs ~ Location, p.adjust.method = "BH") 
+
+## Phylogenetic diversity (Faith_pd) ## 
+Par_LOC.div.KW_Pd <- Par_LOC.div.df2 %>%
+  kruskal_test(Phylogenetic_diversity ~ Par_LOC.div.df2$Location)
+#Pairwise comparisons Wilcox-Test 
+Par_LOC.div.KW_pd_pw <- Par_LOC.div.df2 %>%
+      pairwise_wilcox_test(Phylogenetic_diversity ~ Location, p.adjust.method = "BH") 
+
+combined_Par_LOC.div_pw <- bind_rows(Par_LOC.div.KW_Shannon_pw, Par_LOC.div.KW_Obs_pw, Par_LOC.div.KW_pd_pw)
+# no significant 
+
+```
+
+#2 Beta diversity
+
+```{r}
+
+summarize_phyloseq(Par_LOC_rare)
+
+# if we remove OTUs that are detected atleast 10 times in 5% of the samples
+Par_LOC_rare.filtered <- core(Par_LOC_rare, detection = 10, prevalence = 0.05)
+summarize_phyloseq(Par_LOC_rare.filtered)
+
+## the sparcity is reduced significantly from 0.84 to 0.76
+
+## Unweighted Unifrac #### 
+
+## By using the filtered dataset (Par_TS_rare.filtered) the axis explained much higher proportion of the variation!! But the ordination plot doesn't show clearly both locations
+
+Par_LOC_unwt.uni <- ordinate(Par_LOC_rare, "PCoA", "unifrac", weighted=F)
+# check for Eigen values 
+barplot(Par_LOC_unwt.uni$values$Relative_eig[1:10])
+
+Par_LOC_unwt.uni.plot <- plot_ordination(Par_LOC_rare, 
+                        Par_LOC_unwt.uni, color="place") +
+                        ggtitle("Unweighted UniFrac") + geom_point(size = 6)+ 
+                        theme_classic() + 
+                        scale_color_manual(name = "place", 
+                                           values = my_colors_loc)
+print(Par_LOC_unwt.uni.plot)
+
+### PERMANOVA 
+Par_LOC.meta <- meta(Par_LOC_rare)
+
+set.seed(1)
+Par_LOC_uwt_unifrac.dist <- UniFrac(Par_LOC_rare, 
+                        weighted = FALSE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Par_LOC_uwt_unifrac.dist_SIG <- adonis2(Par_LOC_uwt_unifrac.dist ~ place, data = Par_LOC.meta)
+
+## Pairwise permanova
+Par_LOC_uwt_unifrac.dist_SIG <- pairwise.adonis(Par_LOC_uwt_unifrac.dist,Par_LOC.meta$place,p.adjust.m='bonferroni')
+
+## Checking Homogenity of Variance 
+Par_LOC_uwt_unifrac.dist_SIG_DISP <- betadisper(Par_LOC_uwt_unifrac.dist, Par_LOC.meta$place)
+permutest(Par_LOC_uwt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+
+## Weighted Unifrac ####
+
+## We use the relative abundance for this analysis (Par_TS.rel)
+
+Par_LOC.rel <- microbiome::transform(Par_LOC_rare, "compositional")
+
+Par_LOC_wt.uni <- ordinate(Par_LOC.rel , "PCoA", "unifrac", weighted=T)
+
+# check for Eigen values 
+barplot(Par_LOC_wt.uni$values$Eigenvalues[1:10])
+
+Par_LOC_wt.uni.plot <- plot_ordination(Par_LOC.rel, 
+                      Par_LOC_wt.uni, color="place") + 
+                      ggtitle("Weighted UniFrac") + 
+                      geom_point(size = 6) + 
+                      theme_classic() + 
+                      scale_color_manual(name = "place", 
+                                           values = my_colors_loc)
+print(Par_LOC_wt.uni.plot)
+
+### PERMANOVA 
+Par_LOC.meta <- meta(Par_LOC_rare)
+
+set.seed(1)
+Par_LOC_wt_unifrac.dist <- UniFrac(Par_LOC.rel, 
+                        weighted = TRUE, 
+                        normalized = TRUE,  
+                        parallel = FALSE, 
+                        fast = TRUE)
+Par_LOC_wt_unifrac.dist_SIG <- adonis2(Par_LOC_wt_unifrac.dist ~ place, data = Par_LOC.meta)
+
+
+## Checking Homogenity of Variance 
+Par_LOC_wt_unifrac.dist_SIG_DISP <- betadisper(Par_LOC_wt_unifrac.dist, Par_LOC.meta$place)
+permutest(Par_LOC_wt_unifrac.dist_SIG_DISP, pairwise = TRUE)
+```
+
+
+#3 Share core taxa between sample types of Arbacia 
+
+```{r}
+# convert to relative abundances
+Par_LOC.rel <- microbiome::transform(Par_LOC, "compositional")
+
+#Make a list of Sample types
+Location <- unique(as.character(meta(Par_LOC.rel)$place))
+print(Location)
+
+list_core <- c() # an empty object to store information
+
+for (n in Location){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    ps.sub <- subset_samples(Par_LOC.rel.f, place == n) # Choose sample from bosy.tissue by n
+    core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.001, # 0.001 in atleast 60% samples 
+                           prevalence = 0.6)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m))) # print core taxa identified in each DiseaseState.
+    
+    list_core[[n]] <- core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+my_colors_loc
+# supplying colors in the order they appear in list_core
+mycols_loc <- c(BLANES="#FD6467", CONTROL="#5B1A18") 
+plot(venn(list_core),
+     fills = mycols_loc)
+
+print(list_core)
+
+## to see the taxonomy of these ones 
+taxa_names(Par_LOC.rel)[1:5]
+# format names
+Par_LOC.rel.f <- format_to_besthit(Par_LOC.rel)
+# check names
+taxa_names(Par_LOC.rel.f)[1:5]
+### run the previous lopp with this new names : Par_LOC_prune.rel.f
+```
+
+#4. Unique and share taxa between locations
+```{r}
+# ------------------------
+# Taxonomic Analysis at the ASV level
+# ------------------------
+# Subset by species
+blanes_asv <- subset_samples(Par_LOC_rare, place == "BLANES")
+palma_asv <- subset_samples(Par_LOC_rare, place == "CONTROL")
+
+# Prune zero taxa
+blanes_asv <- prune_taxa(taxa_sums(blanes_asv) > 10, blanes_asv)
+palma_asv <- prune_taxa(taxa_sums(palma_asv) > 10, palma_asv)
+
+# Extract asv names
+blanes_asvnames <- taxa_names(blanes_asv)
+palma_asvnames <- taxa_names(palma_asv)
+
+# Find unique and shared genera
+unique_asv_blanes <- setdiff(blanes_asvnames, palma_asv_asvnames)
+unique_asv_palma <- setdiff(palma_asv_asvnames, blanes_asvnames)
+shared_asv <- intersect(blanes_asvnames, palma_asv_asvnames)
+
+# ------------------------
+# Taxonomic Analysis at the GENUS level
+# ------------------------
+loc_genus <- tax_glom(Par_LOC_rare, taxrank = "Genus")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_genus) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_genus <- subset_samples(loc_genus, place == "BLANES")
+palma_genus <- subset_samples(loc_genus, place == "CONTROL")
+
+# Prune zero taxa
+blanes_genus <- prune_taxa(taxa_sums(blanes_genus) > 10, blanes_genus)
+palma_genus <- prune_taxa(taxa_sums(palma_genus) > 10, palma_genus)
+
+# Extract genus names
+blanes_genusnames <- taxa_names(blanes_genus)
+palma_genusnames <- taxa_names(palma_genus)
+
+# Find unique and shared genera
+unique_genus_blanes <- setdiff(blanes_genusnames, palma_genusnames)
+unique_genus_palma <- setdiff(palma_genusnames, blanes_genusnames)
+shared_genus <- intersect(blanes_genusnames, palma_genusnames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genus_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_genus_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_genus)
+
+write.csv(unique_blanes_tax, "Unique_taxa/PARloc/unique_PARblanes_genus_taxonomy.csv", row.names = FALSE)
+write.csv(unique_palma_tax, "Unique_taxa/PARloc/unique_PARpalma_genus_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "Unique_taxa/PARloc/shared_PARloc_genus_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the FAMILY level
+# ------------------------
+loc_family <- tax_glom(Par_LOC_rare, taxrank = "Family")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_family) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_family <- subset_samples(loc_family, place == "BLANES")
+palma_family <- subset_samples(loc_family, place == "CONTROL")
+
+# Prune zero taxa
+blanes_family <- prune_taxa(taxa_sums(blanes_family) > 10, blanes_family)
+palma_family <- prune_taxa(taxa_sums(palma_family) > 10, palma_family)
+
+# Extract family names
+blanes_familynames <- taxa_names(blanes_family)
+palma_familynames <- taxa_names(palma_family)
+
+# Find unique and shared genera
+unique_family_blanes <- setdiff(blanes_familynames, palma_familynames)
+unique_family_palma <- setdiff(palma_familynames, blanes_familynames)
+shared_family <- intersect(blanes_familynames, palma_familynames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_family_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_family_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_family)
+
+write.csv(unique_blanes_tax, "Unique_taxa/PARloc/unique_PARblanes_family_taxonomy.csv", row.names = FALSE)
+write.csv(unique_palma_tax, "Unique_taxa/PARloc/unique_PARpalma_family_taxonomy.csv", row.names = FALSE)
+write.csv(shared_tax, "Unique_taxa/PARloc/shared_PARloc_family_taxonomy.csv", row.names = FALSE)
+
+# ------------------------
+# Taxonomic Analysis at the PHYLUM level
+# ------------------------
+loc_phylum <- tax_glom(Par_LOC_rare, taxrank = "Phylum")
+
+# Extract taxonomy table from ps_genus
+tax_table_df <- tax_table(loc_phylum) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "Taxa_ID")  
+
+# Subset by species
+blanes_phy <- subset_samples(loc_phylum, place == "BLANES")
+palma_phy <- subset_samples(loc_phylum, place == "CONTROL")
+
+# Prune zero taxa
+blanes_phy <- prune_taxa(taxa_sums(blanes_phy) > 10, blanes_phy)
+palma_phy <- prune_taxa(taxa_sums(palma_phy) > 10, palma_phy)
+
+# Extract phy names
+blanes_phynames <- taxa_names(blanes_phy)
+palma_phynames <- taxa_names(palma_phy)
+
+# Find unique and shared genera
+unique_phy_blanes <- setdiff(blanes_phynames, palma_phynames)
+unique_phy_palma <- setdiff(palma_phynames, blanes_phynames)
+shared_phy <- intersect(blanes_phynames, palma_phynames)
+
+# Tables of taxonomy info
+unique_blanes_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_blanes)
+unique_palma_tax <- tax_table_df %>% filter(Taxa_ID %in% unique_phy_palma)
+shared_tax <- tax_table_df %>% filter(Taxa_ID %in% shared_phy)
+
+# ------------------------
+# Generate Venn Diagrams for Genera & Families
+# ------------------------
+
+venn_data_asv <- list(
+  "Blanes" = blanes_asvnames,
+  "Palma" = palma_asvnames
+)
+
+venn_data_genus <- list(
+  "Blanes" = blanes_genusnames,
+  "Palma" = palma_genusnames
+)
+
+venn_data_family <- list(
+  "Blanes" = blanes_familynames,
+  "Palma" = palma_familynames
+)
+
+
+# ASV-level Venn Diagram
+ggvenn(venn_data_asv, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/PARloc/venn_diagram_asv.png", dpi = 300)
+
+# Genus-level Venn Diagram
+ggvenn(venn_data_genus, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/PARloc/venn_diagram_genus.png", dpi = 300)
+
+# Family-level Venn Diagram
+ggvenn(venn_data_family, 
+       fill_color = c("#FD6467", "#5B1A18"),
+       fill_alpha = 0.8,
+       stroke_color = "black",
+       stroke_size = 0.7,
+       set_name_size = 8,
+       text_size = 8)
+ggsave("Unique_taxa/PARloc/venn_diagram_family.png", dpi = 300)
+```
+
+#5. Diferential abundance
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/ANCOMBC/inst/doc/ANCOMBC.html
+# Let's perform this test at Genus level 
+ps_Par_LOC_genus <- phyloseq::tax_glom(Par_LOC, taxrank = "Genus")
+ps_Par_LOC_fam <- phyloseq::tax_glom(Par_LOC, taxrank = "Family")
+ps_Par_LOC_phy <- phyloseq::tax_glom(Par_LOC, taxrank = "Phylum")
+
+# Check which taxa have zero variance
+variance <- apply(otu_table(ps_Par_LOC_phy), 1, var)
+taxa_to_remove <- names(variance[variance == 0])
+
+# Remove taxa with zero variance from the phyloseq object
+filtered_Par_LOC_phy <- prune_taxa(!taxa_names(ps_Par_LOC_phy) %in% taxa_to_remove, ps_Par_LOC_phy)
+
+# Perform ANCOM-BC analysis
+ancombc_Par_LOC_phy <- ancombc2(
+  data = filtered_Par_LOC_phy,
+  fix_formula = "place", # Grouping variable
+  p_adj_method = "BH",  # Adjust p-values for multiple comparisons
+  prv_cut = 0.3,      # Filter features with >90% zeros = prevl in >10% of the samples
+  lib_cut = 1000,       # Filter samples with low library sizes
+  group = "place",   # Specify grouping variable
+  struc_zero = TRUE,    # Identify structural zeros
+  neg_lb = TRUE,        # Negative lower bound test       
+)
+
+ancombc_results_Par_LOC <-ancombc_Par_LOC$res
+ancombc_results_Par_LOC_fam <-ancombc_Par_LOC_fam$res
+ancombc_results_Par_LOC_phy <-ancombc_Par_LOC_phy$res
+
+
+# Extract the taxonomy table from the phyloseq object
+taxonomy_table <- as.data.frame(tax_table(filtered_Par_LOC_genus))
+# Merge the taxonomic names with your data
+# Assuming you want to display genus names
+taxonomy_table$ASV <- rownames(taxonomy_table)  # Create a column for ASV names
+# Merge the taxonomy data with the differential abundance results
+ancombc_results_Par_LOC_phy$TaxonName <- taxonomy_table$Phylum[match(ancombc_results_Par_LOC_phy$taxon, taxonomy_table$ASV)]  # Adjust column name if needed
+
+# Write csv with ANCOM-BC results 
+write.csv(ancombc_results_Par_LOC, "ANCOM-BCresults/ANCOMBC_results_Par_LOC.csv")
+write.csv(ancombc_results_Par_LOC_fam, "ANCOM-BCresults/ANCOMBC_results_Par_LOC_fam.csv")
+write.csv(ancombc_results_Par_LOC_phy, "ANCOM-BCresults/ANCOMBC_results_Par_LOC_phy.csv")
+
+# Extract relevant data for "speciesPARACENT"
+data <- data.frame(
+  Taxon = ancombc_results_Par_LOC_fam$taxon,  # Taxon names (e.g., ASVs)
+  LogFoldChange = ancombc_results_Par_LOC_fam$lfc_placeCONTROL,  # Log fold change 
+  AdjPVal = ancombc_results_Par_LOC_fam$q_placeCONTROL,# Adjusted p-value 
+  TaxonName = ancombc_results_Par_LOC_fam$TaxonName  # Taxonomic names (e.g., Genus, Family, etc.)
+)
+
+# Filter for significant results based on adjusted p-value
+data$Significant <- data$AdjPVal < 0.05  # You can adjust this threshold if needed
+data_significant <- data[data$Significant == TRUE, ]  # Only significant results
+
+# Sort by LogFoldChange for better visualization
+data_significant <- data_significant[order(data_significant$LogFoldChange), ]
+
+
+# Create a waterfall plot
+diff_abundance_plot_Par_LOC <- ggplot(data_significant, aes(x = reorder(TaxonName, LogFoldChange), y = LogFoldChange, fill = LogFoldChange)) +
+  geom_bar(stat = "identity", width = 0.7) +  # Bar plot for LogFoldChange
+  coord_flip() +  # Flip coordinates to make it horizontal
+  scale_fill_gradient2(low = "#FD6467", mid = "white", high = "#5B1A18", midpoint = 0, 
+                       name = "Abundance Direction") +  
+  labs(
+    title = "Differential Abundance Waterfall Plot",
+    x = "Class",
+    y = "Log-Fold Change"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 14)
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black")  # Add a horizontal zero line
+```
