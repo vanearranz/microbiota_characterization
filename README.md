@@ -260,7 +260,7 @@ scp -r intern@161.116.67.159:~/data/data/Microbiota_adults/Phyloseq/dna-sequence
 ```
 
 ### STEP 15 : FAPROTAX for functional annotations
-
+```
 Download the pacakge 
 http://www.loucalab.com/archive/FAPROTAX/lib/php/index.php?section=Download
 
@@ -271,6 +271,18 @@ biom convert -i table-with-taxonomyv2.biom -o table-with-taxonomyv2.txt --to-tsv
 
 # Run command
 python3	./collapse_table.py -i table-with-taxonomyv2.txt -g FAPROTAX.txt -f -o functional_otu_table.tsv -r report.txt --column_names_are_in last_comment_line  --keep_header_comments --non_numeric consolidate -v --row_names_are_in_column "taxonomy" --omit_columns 0 --normalize_collapsed columns_before_collapsing --group_leftovers_as 'other'
+```
 
-### ANALYSIS IN R 
+### STATISTICAL ANALYSIS AND VISUALIZATIONS IN R 
+
+```
+Statistical analysis and plots 
+
+**[Results](https://github.com/vanearranz/)** : Use the R Script
+
+Functional analysis including statistical comparisons with FAPROTAX database
+
+**[Fuctional analysis](https://github.com/vanearranz/Metabarcoding_CO1_kelpholdfast/blob/main/4.MorphologyvsMetabarcoding.R)** : Use 4.MorphologyvsMetabarcoding.R
+
+All the results are included in the manuscript "Metabarcoding hyperdiverse kelp holdfast communities on temperate reefs: an experimental approach to inform future studies." by Vanessa Arranz, Libby Liggins and J. David Aguirre. 
 
